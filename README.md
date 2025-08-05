@@ -1,0 +1,2 @@
+# dashboard_analisis_shopee_db_klik
+Sementara untuk dashboard analisis shopee berdasarkan kompetitor
