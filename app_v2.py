@@ -1,7 +1,7 @@
 # ===================================================================================
 #  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI FINAL & POWERFUL
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Prinsip: Mesin Pengambilan Data V2, Tampilan & Analisis V1
+#  Prinsip: Mesin Pengambilan Data V2 Otomatis, Tampilan & Analisis V1
 # ===================================================================================
 
 import streamlit as st
@@ -58,11 +58,9 @@ def load_intelligence_data(_gsheets_service, spreadsheet_id):
     try:
         spreadsheet = _gsheets_service.open_by_key(spreadsheet_id)
         
-        # 1. Database Brand Resmi
         db_sheet = spreadsheet.worksheet(DB_SHEET_NAME)
         brand_db_list = [item for item in db_sheet.col_values(1) if item]
         
-        # 2. Kamus Alias Brand
         kamus_sheet = spreadsheet.worksheet(KAMUS_SHEET_NAME)
         kamus_df = pd.DataFrame(kamus_sheet.get_all_records())
         if 'Alias' not in kamus_df.columns or 'Brand_Utama' not in kamus_df.columns:
@@ -71,7 +69,6 @@ def load_intelligence_data(_gsheets_service, spreadsheet_id):
         else:
             kamus_dict = pd.Series(kamus_df.Brand_Utama.values, index=kamus_df.Alias).to_dict()
 
-        # 3. Database Kategori Produk (dari app.py)
         try:
             kategori_sheet = spreadsheet.worksheet(KATEGORI_SHEET_NAME)
             db_kategori_df = pd.DataFrame(kategori_sheet.get_all_records())
@@ -110,7 +107,6 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
                 df = pd.read_csv(downloader)
                 df[TOKO_COL] = folder['name']
                 
-                # Ekstrak Tanggal dan Status dari nama file
                 match_tanggal = re.search(r'(\d{2}-\d{2}-\d{4})', csv_file['name'])
                 df[TANGGAL_COL] = pd.to_datetime(match_tanggal.group(1), format='%d-%m-%Y') if match_tanggal else pd.NaT
                 
@@ -127,10 +123,12 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         if not all_data: return pd.DataFrame()
         
         final_df = pd.concat(all_data, ignore_index=True)
-        # Pembersihan dan konversi tipe data
+        
+        # PERBAIKAN: Membuat kolom opsional secara defensif
         for col in [HARGA_COL, TERJUAL_COL]:
-            if col in final_df.columns:
-                final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
+            if col not in final_df.columns:
+                final_df[col] = 0 # Buat kolom jika tidak ada
+            final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
         
         final_df[TERJUAL_COL] = final_df[TERJUAL_COL].fillna(0).astype(int)
         final_df[OMZET_COL] = final_df[HARGA_COL] * final_df[TERJUAL_COL]
@@ -194,43 +192,40 @@ def format_harga_aman(x):
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
-# --- TAMPILAN APLIKASI STREAMLIT ---
-st.title("Dashboard Analisis Penjualan & Kompetitor")
-st.sidebar.header("Kontrol Utama")
-
-# 1. Tombol Tarik Data
-if 'data_loaded' not in st.session_state:
-    st.session_state.data_loaded = False
-
-if st.sidebar.button("Tarik Data & Mulai Analisis 🚀", key="load_data_button"):
+# --- FUNGSI MASTER UNTUK MEMUAT SEMUA DATA (OTOMATIS) ---
+@st.cache_data(show_spinner=False)
+def load_master_data():
     drive_service, gsheets_service = get_google_apis()
     brand_db, kamus_brand, db_kategori = load_intelligence_data(gsheets_service, SPREADSHEET_ID)
     raw_df = get_all_competitor_data(drive_service, PARENT_FOLDER_ID)
     
-    if not raw_df.empty:
-        st.session_state.brand_db = brand_db
-        st.session_state.kamus_brand = kamus_brand
-        st.session_state.db_kategori = db_kategori
-        st.session_state.master_df = label_brands(raw_df.copy(), brand_db, kamus_brand)
-        st.session_state.data_loaded = True
-        st.rerun()
-    else:
-        st.session_state.data_loaded = False
-        st.sidebar.error("Gagal memuat data. Periksa pesan error di atas.")
+    if raw_df.empty:
+        return None, None, None, None
+        
+    master_df = label_brands(raw_df.copy(), brand_db, kamus_brand)
+    return master_df, brand_db, kamus_brand, db_kategori
 
-if not st.session_state.data_loaded:
-    st.info("👈 Klik tombol di sidebar untuk menarik data dan memulai analisis.")
+# --- TAMPILAN APLIKASI STREAMLIT ---
+st.title("Dashboard Analisis Penjualan & Kompetitor")
+
+# Memuat data secara otomatis
+master_df, brand_db, kamus_brand, db_kategori = load_master_data()
+
+if master_df is None:
+    st.error("Gagal memuat data utama. Silakan periksa konfigurasi dan koneksi Anda.")
     st.stop()
 
-# --- Setelah Data Dimuat, Tampilkan Semua Kontrol & Tampilan ---
-master_df = st.session_state.master_df
-df_labeled = master_df[master_df[BRAND_COL] != 'TIDAK DIKETAHUI'].copy()
-db_kategori = st.session_state.db_kategori
+# Menyimpan data yang sudah dimuat ke session state untuk digunakan di Ruang Kontrol
+st.session_state.brand_db = brand_db
+st.session_state.kamus_brand = kamus_brand
+st.session_state.master_df = master_df
 
-# 2. Sidebar Kontrol Lanjutan
+df_labeled = master_df[master_df[BRAND_COL] != 'TIDAK DIKETAHUI'].copy()
+
+# --- Sidebar Kontrol Lanjutan ---
 st.sidebar.header("Filter & Pengaturan")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
-main_store = st.sidebar.selectbox("Pilih Toko Utama:", all_stores, index=0)
+main_store = st.sidebar.selectbox("Pilih Toko Utama:", all_stores, index=0 if all_stores else -1)
 
 min_date, max_date = df_labeled[TANGGAL_COL].min().date(), df_labeled[TANGGAL_COL].max().date()
 selected_date_range = st.sidebar.date_input("Rentang Tanggal:", [min_date, max_date], min_value=min_date, max_value=max_date)
@@ -248,7 +243,7 @@ df_filtered['Minggu'] = df_filtered[TANGGAL_COL].dt.to_period('W-SUN').apply(lam
 main_store_df = df_filtered[df_filtered[TOKO_COL] == main_store].copy()
 competitor_df = df_filtered[df_filtered[TOKO_COL] != main_store].copy()
 
-# 3. Download Button
+# --- Download Button ---
 csv_to_download = convert_df_to_csv(df_filtered)
 st.sidebar.download_button(
    label="📥 Download Data Analisis (CSV)",
@@ -257,7 +252,7 @@ st.sidebar.download_button(
    mime='text/csv',
 )
 
-# 4. Navigasi Halaman Utama
+# --- Navigasi Halaman Utama ---
 st.sidebar.header("Navigasi")
 page = st.sidebar.radio("Pilih Halaman:", ["Analisis Penjualan", "Produk Belum Ternamai"])
 
@@ -361,7 +356,7 @@ if page == "Analisis Penjualan":
                                 c1, c2, c3 = st.columns(3)
                                 c1.metric("Harga Kompetitor", format_harga_aman(match_info[HARGA_COL]), delta=f"Rp {price_diff:,.0f}")
                                 c2.metric("Status", match_info[STATUS_COL])
-                                c3.metric(f"Terjual/Bln", f"{match_info[TERJUAL_COL]}")
+                                c3.metric(f"Terjual/Bln", f"{int(match_info[TERJUAL_COL])}")
 
     with tab3:
         st.header("Analisis Brand di Toko Kompetitor")
@@ -428,7 +423,6 @@ if page == "Analisis Penjualan":
             final_summary = pd.concat(summary_list)
             final_summary['Rata_Rata_Terjual_Harian'] = (final_summary['Total_Terjual'] / 7).round().astype(int)
             
-            # Formatting
             final_summary['Pertumbuhan Omzet (WoW)'] = final_summary['Pertumbuhan Omzet (WoW)'].apply(format_wow_growth)
             final_summary['Total Omzet'] = final_summary['Total_Omzet'].apply(format_harga_aman)
             final_summary['Rata-Rata Harga'] = final_summary['Rata_Rata_Harga'].apply(format_harga_aman)
@@ -467,6 +461,8 @@ if page == "Analisis Penjualan":
 
 elif page == "Produk Belum Ternamai":
     st.header("Ruang Kontrol: Latih Sistem Anda")
+    # Mengambil data dari session state yang sudah dimuat
+    gsheets_service = get_google_apis()[1]
     unknown_df = st.session_state.master_df[st.session_state.master_df[BRAND_COL] == 'TIDAK DIKETAHUI']
 
     if unknown_df.empty:
@@ -508,5 +504,4 @@ elif page == "Produk Belum Ternamai":
                 if correction_made:
                     st.cache_data.clear()
                     st.cache_resource.clear()
-                    del st.session_state.master_df
                     st.rerun()
