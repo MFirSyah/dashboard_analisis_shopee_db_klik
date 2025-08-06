@@ -85,8 +85,8 @@ def load_intelligence_data(_gsheets_service, spreadsheet_id):
 @st.cache_data(show_spinner="Membaca semua data dari folder kompetitor...", ttl=300)
 def get_all_competitor_data(_drive_service, parent_folder_id):
     """
-    PERBAIKAN BESAR: Fungsi ini sekarang bisa menangani file CSV biasa dan Google Sheets.
-    Ia akan menggunakan metode 'Export' untuk Google Sheets dan 'Get' untuk CSV biasa.
+    Fungsi "Anti Peluru": Membaca file CSV & Google Sheets, melewati file yang error,
+    dan memberikan laporan diagnosis.
     """
     all_data = []
     problematic_files = []
@@ -97,13 +97,12 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
 
         if not subfolders:
             st.warning("Tidak ada subfolder yang ditemukan di dalam folder induk.")
-            return pd.DataFrame()
+            return pd.DataFrame(), []
 
         progress_bar = st.progress(0, text="Membaca data...")
         for i, folder in enumerate(subfolders):
             progress_bar.progress((i + 1) / len(subfolders), text=f"Membaca folder: {folder['name']}")
             
-            # PERBAIKAN: Mencari file Google Sheet ATAU file CSV
             file_query = f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet')"
             file_results = _drive_service.files().list(q=file_query, fields="files(id, name, mimeType)").execute()
             csv_files = file_results.get('files', [])
@@ -111,53 +110,46 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
             for csv_file in csv_files:
                 try:
                     file_id = csv_file.get('id')
+                    file_name = csv_file.get('name')
                     mime_type = csv_file.get('mimeType')
                     
-                    # PERBAIKAN: Memilih metode download berdasarkan tipe file
                     if mime_type == 'application/vnd.google-apps.spreadsheet':
-                        # Gunakan EXPORT untuk Google Sheets
                         request = _drive_service.files().export_media(fileId=file_id, mimeType='text/csv')
                     else:
-                        # Gunakan GET untuk file CSV biasa
                         request = _drive_service.files().get_media(fileId=file_id)
 
                     downloader = io.BytesIO(request.execute())
                     
                     if downloader.getbuffer().nbytes == 0:
-                        problematic_files.append(f"{folder['name']}/{csv_file.get('name')} (File Kosong)")
+                        problematic_files.append(f"{folder['name']}/{file_name} (File Kosong)")
                         continue
 
                     df = pd.read_csv(downloader)
                     
                     if NAMA_PRODUK_COL not in df.columns:
-                        problematic_files.append(f"{folder['name']}/{csv_file.get('name')} (Kolom '{NAMA_PRODUK_COL}' tidak ditemukan)")
+                        problematic_files.append(f"{folder['name']}/{file_name} (Kolom '{NAMA_PRODUK_COL}' tidak ditemukan)")
                         continue
 
                     df[TOKO_COL] = folder['name']
                     
-                    match_tanggal = re.search(r'(\d{4}-\d{2}-\d{2})', csv_file.get('name'))
+                    match_tanggal = re.search(r'(\d{4}-\d{2}-\d{2})', file_name)
                     df[TANGGAL_COL] = pd.to_datetime(match_tanggal.group(1), format='%Y-%m-%d') if match_tanggal else pd.NaT
                     
-                    if 'ready' in csv_file.get('name').lower():
+                    if 'ready' in file_name.lower():
                         df[STATUS_COL] = 'Tersedia'
-                    elif 'habis' in csv_file.get('name').lower():
+                    elif 'habis' in file_name.lower():
                         df[STATUS_COL] = 'Habis'
                     else:
                         df[STATUS_COL] = 'N/A'
                         
                     all_data.append(df)
                 except Exception as file_error:
-                    problematic_files.append(f"{folder['name']}/{csv_file.get('name')} (Error: {file_error})")
+                    problematic_files.append(f"{folder['name']}/{file_name} (Error: {file_error})")
                     continue
         
         progress_bar.empty()
 
-        if problematic_files:
-            st.warning("Beberapa file gagal diproses dan dilewati:")
-            for file_info in problematic_files:
-                st.code(file_info)
-
-        if not all_data: return pd.DataFrame()
+        if not all_data: return pd.DataFrame(), problematic_files
         
         final_df = pd.concat(all_data, ignore_index=True)
         
@@ -169,11 +161,11 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         final_df[TERJUAL_COL] = final_df[TERJUAL_COL].fillna(0).astype(int)
         final_df[OMZET_COL] = final_df[HARGA_COL] * final_df[TERJUAL_COL]
 
-        return final_df
+        return final_df, problematic_files
         
     except Exception as e:
         st.error(f"Terjadi kesalahan fatal saat mengambil data: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(), []
 
 def label_brands(df, brand_db, kamus_brand, fuzzy_threshold=88):
     if NAMA_PRODUK_COL not in df.columns: st.stop()
@@ -232,18 +224,24 @@ def convert_df_to_csv(df):
 def load_master_data():
     drive_service, gsheets_service = get_google_apis()
     brand_db, kamus_brand, db_kategori = load_intelligence_data(gsheets_service, SPREADSHEET_ID)
-    raw_df = get_all_competitor_data(drive_service, PARENT_FOLDER_ID)
+    raw_df, problematic_files = get_all_competitor_data(drive_service, PARENT_FOLDER_ID)
     
     if raw_df is None or raw_df.empty:
-        return None, None, None, None
+        return None, None, None, None, problematic_files
         
     master_df = label_brands(raw_df.copy(), brand_db, kamus_brand)
-    return master_df, brand_db, kamus_brand, db_kategori
+    return master_df, brand_db, kamus_brand, db_kategori, problematic_files
 
 # --- TAMPILAN APLIKASI STREAMLIT ---
 st.title("Dashboard Analisis Penjualan & Kompetitor")
 
-master_df, brand_db, kamus_brand, db_kategori = load_master_data()
+master_df, brand_db, kamus_brand, db_kategori, problematic_files = load_master_data()
+
+if problematic_files:
+    st.warning("Beberapa file gagal diproses dan dilewati:")
+    with st.expander("Klik untuk melihat detail file bermasalah"):
+        for file_info in problematic_files:
+            st.code(file_info)
 
 if master_df is None:
     st.error("Gagal memuat data utama atau tidak ada data valid yang ditemukan.")
@@ -293,7 +291,6 @@ st.sidebar.header("Navigasi")
 page = st.sidebar.radio("Pilih Halaman:", ["Analisis Penjualan", "Produk Belum Ternamai"])
 
 if page == "Analisis Penjualan":
-    # Kode untuk semua tab analisis (tidak diubah, karena sudah benar)
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([f"⭐ Analisis Toko Saya ({main_store})", "⚖️ Perbandingan Harga", "🏆 Analisis Brand Kompetitor", "📦 Status Stok Produk", "📈 Kinerja Penjualan", "📊 Analisis Mingguan"])
 
     with tab1:
