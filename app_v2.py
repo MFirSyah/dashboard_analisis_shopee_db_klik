@@ -312,13 +312,22 @@ if page == "Analisis Penjualan":
             main_store_df_cat = fuzzy_merge_categories(main_store_df.copy(), db_kategori)
             category_sales = main_store_df_cat.groupby('Kategori')[TERJUAL_COL].sum().reset_index()
             
-            col1, col2 = st.columns([1,2])
-            sort_order_cat = col1.radio("Urutkan:", ["Terlaris", "Kurang Laris"], horizontal=True, key="cat_sort")
-            top_n_cat = col2.number_input("Tampilkan Top:", 1, len(category_sales), 10, key="cat_top_n")
-            
-            cat_sales_sorted = category_sales.sort_values(TERJUAL_COL, ascending=(sort_order_cat == "Kurang Laris")).head(top_n_cat)
-            fig_cat = px.bar(cat_sales_sorted, x='Kategori', y=TERJUAL_COL, title=f'Top {top_n_cat} Kategori', text_auto=True)
-            st.plotly_chart(fig_cat, use_container_width=True)
+            if not category_sales.empty:
+                col1, col2 = st.columns([1,2])
+                sort_order_cat = col1.radio("Urutkan:", ["Terlaris", "Kurang Laris"], horizontal=True, key="cat_sort")
+                
+                # PERBAIKAN: Membuat nilai default dan max menjadi dinamis dan aman
+                max_categories = len(category_sales)
+                default_top_n = min(10, max_categories)
+                
+                top_n_cat = col2.number_input("Tampilkan Top:", min_value=1, max_value=max_categories, value=default_top_n, key="cat_top_n")
+                
+                cat_sales_sorted = category_sales.sort_values(TERJUAL_COL, ascending=(sort_order_cat == "Kurang Laris")).head(top_n_cat)
+                fig_cat = px.bar(cat_sales_sorted, x='Kategori', y=TERJUAL_COL, title=f'Top {top_n_cat} Kategori', text_auto=True)
+                st.plotly_chart(fig_cat, use_container_width=True)
+            else:
+                st.info("Tidak ada data penjualan kategori untuk ditampilkan pada rentang tanggal ini.")
+
         else:
             st.info(f"Sheet '{KATEGORI_SHEET_NAME}' tidak ditemukan atau format salah. Analisis kategori tidak dapat ditampilkan.")
 
@@ -329,9 +338,12 @@ if page == "Analisis Penjualan":
 
         st.subheader("3. Distribusi Omzet Brand (Top 6)")
         brand_omzet_main = main_store_df.groupby(BRAND_COL)[OMZET_COL].sum().nlargest(6).reset_index()
-        fig_brand_pie = px.pie(brand_omzet_main, names=BRAND_COL, values=OMZET_COL, title='Top 6 Brand Terlaris berdasarkan Omzet')
-        fig_brand_pie.update_traces(texttemplate='%{label}<br>%{percent}<br>%{value:,.0f}')
-        st.plotly_chart(fig_brand_pie, use_container_width=True)
+        if not brand_omzet_main.empty:
+            fig_brand_pie = px.pie(brand_omzet_main, names=BRAND_COL, values=OMZET_COL, title='Top 6 Brand Terlaris berdasarkan Omzet')
+            fig_brand_pie.update_traces(texttemplate='%{label}<br>%{percent}<br>%{value:,.0f}')
+            st.plotly_chart(fig_brand_pie, use_container_width=True)
+        else:
+            st.info("Tidak ada data omzet brand untuk ditampilkan.")
 
     with tab2:
         st.header(f"Perbandingan Produk '{main_store}' dengan Kompetitor")
