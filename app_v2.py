@@ -85,9 +85,8 @@ def load_intelligence_data(_gsheets_service, spreadsheet_id):
 @st.cache_data(show_spinner="Membaca semua data dari folder kompetitor...", ttl=300)
 def get_all_competitor_data(_drive_service, parent_folder_id):
     """
-    PERBAIKAN BESAR: Fungsi ini sekarang "Anti Peluru".
-    Ia akan mencoba membaca setiap file CSV. Jika ada file yang gagal, ia akan dilewati
-    dan sebuah peringatan akan ditampilkan, tanpa membuat aplikasi crash.
+    PERBAIKAN BESAR: Fungsi ini sekarang bisa menangani file CSV biasa dan Google Sheets.
+    Ia akan menggunakan metode 'Export' untuk Google Sheets dan 'Get' untuk CSV biasa.
     """
     all_data = []
     problematic_files = []
@@ -103,46 +102,56 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         progress_bar = st.progress(0, text="Membaca data...")
         for i, folder in enumerate(subfolders):
             progress_bar.progress((i + 1) / len(subfolders), text=f"Membaca folder: {folder['name']}")
-            file_query = f"'{folder['id']}' in parents and mimeType = 'text/csv'"
-            file_results = _drive_service.files().list(q=query, fields="files(id, name)").execute()
+            
+            # PERBAIKAN: Mencari file Google Sheet ATAU file CSV
+            file_query = f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet')"
+            file_results = _drive_service.files().list(q=file_query, fields="files(id, name, mimeType)").execute()
             csv_files = file_results.get('files', [])
+
             for csv_file in csv_files:
                 try:
-                    request = _drive_service.files().get_media(fileId=csv_file['id'])
+                    file_id = csv_file.get('id')
+                    mime_type = csv_file.get('mimeType')
+                    
+                    # PERBAIKAN: Memilih metode download berdasarkan tipe file
+                    if mime_type == 'application/vnd.google-apps.spreadsheet':
+                        # Gunakan EXPORT untuk Google Sheets
+                        request = _drive_service.files().export_media(fileId=file_id, mimeType='text/csv')
+                    else:
+                        # Gunakan GET untuk file CSV biasa
+                        request = _drive_service.files().get_media(fileId=file_id)
+
                     downloader = io.BytesIO(request.execute())
                     
-                    # Cek jika file kosong
                     if downloader.getbuffer().nbytes == 0:
-                        problematic_files.append(f"{folder['name']}/{csv_file['name']} (File Kosong)")
+                        problematic_files.append(f"{folder['name']}/{csv_file.get('name')} (File Kosong)")
                         continue
 
                     df = pd.read_csv(downloader)
                     
-                    # Validasi kolom esensial
                     if NAMA_PRODUK_COL not in df.columns:
-                        problematic_files.append(f"{folder['name']}/{csv_file['name']} (Kolom '{NAMA_PRODUK_COL}' tidak ditemukan)")
+                        problematic_files.append(f"{folder['name']}/{csv_file.get('name')} (Kolom '{NAMA_PRODUK_COL}' tidak ditemukan)")
                         continue
 
                     df[TOKO_COL] = folder['name']
                     
-                    match_tanggal = re.search(r'(\d{4}-\d{2}-\d{2})', csv_file['name'])
+                    match_tanggal = re.search(r'(\d{4}-\d{2}-\d{2})', csv_file.get('name'))
                     df[TANGGAL_COL] = pd.to_datetime(match_tanggal.group(1), format='%Y-%m-%d') if match_tanggal else pd.NaT
                     
-                    if 'ready' in csv_file['name'].lower():
+                    if 'ready' in csv_file.get('name').lower():
                         df[STATUS_COL] = 'Tersedia'
-                    elif 'habis' in csv_file['name'].lower():
+                    elif 'habis' in csv_file.get('name').lower():
                         df[STATUS_COL] = 'Habis'
                     else:
                         df[STATUS_COL] = 'N/A'
                         
                     all_data.append(df)
                 except Exception as file_error:
-                    problematic_files.append(f"{folder['name']}/{csv_file['name']} (Error: {file_error})")
-                    continue # Lanjut ke file berikutnya
+                    problematic_files.append(f"{folder['name']}/{csv_file.get('name')} (Error: {file_error})")
+                    continue
         
         progress_bar.empty()
 
-        # Tampilkan semua file bermasalah di satu tempat
         if problematic_files:
             st.warning("Beberapa file gagal diproses dan dilewati:")
             for file_info in problematic_files:
