@@ -153,12 +153,16 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         
         final_df = pd.concat(all_data, ignore_index=True)
         
+        # PERBAIKAN BESAR: Membersihkan kolom numerik secara agresif sebelum konversi
         for col in [HARGA_COL, TERJUAL_COL]:
             if col not in final_df.columns:
-                final_df[col] = 0
-            final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
+                final_df[col] = 0 # Buat kolom jika tidak ada
+            else:
+                # Ubah ke string, hapus semua karakter non-digit, lalu ubah ke numerik
+                final_df[col] = final_df[col].astype(str).str.replace(r'[^\d]', '', regex=True)
+                final_df[col] = pd.to_numeric(final_df[col], errors='coerce').fillna(0)
         
-        final_df[TERJUAL_COL] = final_df[TERJUAL_COL].fillna(0).astype(int)
+        final_df[TERJUAL_COL] = final_df[TERJUAL_COL].astype(int)
         final_df[OMZET_COL] = final_df[HARGA_COL] * final_df[TERJUAL_COL]
 
         return final_df, problematic_files
@@ -316,7 +320,6 @@ if page == "Analisis Penjualan":
                 col1, col2 = st.columns([1,2])
                 sort_order_cat = col1.radio("Urutkan:", ["Terlaris", "Kurang Laris"], horizontal=True, key="cat_sort")
                 
-                # PERBAIKAN: Membuat nilai default dan max menjadi dinamis dan aman
                 max_categories = len(category_sales)
                 default_top_n = min(10, max_categories)
                 
