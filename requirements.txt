@@ -1,6 +1,9 @@
 streamlit
 pandas
+gspread
+gspread-dataframe
 google-api-python-client
 google-auth-oauthlib
 google-auth-httplib2
 thefuzz
+python-Levenshtein
