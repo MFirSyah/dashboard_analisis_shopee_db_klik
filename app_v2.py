@@ -153,12 +153,10 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         
         final_df = pd.concat(all_data, ignore_index=True)
         
-        # PERBAIKAN BESAR: Membersihkan kolom numerik secara agresif sebelum konversi
         for col in [HARGA_COL, TERJUAL_COL]:
             if col not in final_df.columns:
-                final_df[col] = 0 # Buat kolom jika tidak ada
+                final_df[col] = 0
             else:
-                # Ubah ke string, hapus semua karakter non-digit, lalu ubah ke numerik
                 final_df[col] = final_df[col].astype(str).str.replace(r'[^\d]', '', regex=True)
                 final_df[col] = pd.to_numeric(final_df[col], errors='coerce').fillna(0)
         
@@ -435,7 +433,11 @@ if page == "Analisis Penjualan":
         summary_list = []
         for store in sorted(df_filtered[TOKO_COL].unique()):
             store_df = df_filtered[df_filtered[TOKO_COL] == store]
-            weekly_summary = store_df.groupby('Minggu').agg(Total_Omzet=(OMZET_COL, 'sum'), Total_Terjual=(TERJUAL_COL, 'sum'), Rata_Rata_Harga=(HARGA_COL, 'mean')).reset_index()
+            weekly_summary = store_df.groupby('Minggu').agg(
+                Total_Omzet=(OMZET_COL, 'sum'),
+                Total_Terjual=(TERJUAL_COL, 'sum'),
+                Rata_Rata_Harga=(HARGA_COL, 'mean')
+            ).reset_index()
             if not weekly_summary.empty:
                 weekly_summary['Pertumbuhan Omzet (WoW)'] = weekly_summary['Total_Omzet'].pct_change()
                 weekly_summary['Toko'] = store
@@ -443,11 +445,25 @@ if page == "Analisis Penjualan":
         if summary_list:
             final_summary = pd.concat(summary_list)
             final_summary['Rata_Rata_Terjual_Harian'] = (final_summary['Total_Terjual'] / 7).round().astype(int)
+            
+            # PERBAIKAN: Menggunakan nama kolom yang benar (dengan underscore)
             final_summary_display = final_summary.copy()
             final_summary_display['Pertumbuhan Omzet (WoW)'] = final_summary_display['Pertumbuhan Omzet (WoW)'].apply(format_wow_growth)
-            final_summary_display['Total Omzet'] = final_summary_display['Total Omzet'].apply(format_harga_aman)
+            final_summary_display['Total Omzet'] = final_summary_display['Total_Omzet'].apply(format_harga_aman)
             final_summary_display['Rata-Rata Harga'] = final_summary_display['Rata_Rata_Harga'].apply(format_harga_aman)
-            st.dataframe(final_summary_display[['Minggu', 'Toko', 'Total Omzet', 'Pertumbuhan Omzet (WoW)', 'Total_Terjual', 'Rata_Rata_Terjual_Harian', 'Rata-Rata Harga']].rename(columns={'Total_Terjual': 'Total Terjual'}).style.applymap(colorize_growth, subset=['Pertumbuhan Omzet (WoW)']), use_container_width=True, hide_index=True)
+            
+            # Mengganti nama kolom hanya untuk ditampilkan
+            display_df = final_summary_display.rename(columns={
+                'Minggu': 'Mulai Minggu',
+                'Total_Omzet': 'Total Omzet',
+                'Total_Terjual': 'Total Terjual',
+                'Rata_Rata_Harga': 'Rata-Rata Harga',
+                'Rata_Rata_Terjual_Harian': 'Rata-Rata Terjual Harian'
+            })
+            
+            st.dataframe(display_df[['Mulai Minggu', 'Toko', 'Total Omzet', 'Pertumbuhan Omzet (WoW)', 'Total Terjual', 'Rata-Rata Terjual Harian', 'Rata-Rata Harga']]
+            .style.applymap(colorize_growth, subset=['Pertumbuhan Omzet (WoW)']), use_container_width=True, hide_index=True)
+
     with tab6:
         st.header("Analisis Produk Baru Mingguan")
         st.subheader("Perbandingan Produk Baru Antar Minggu")
