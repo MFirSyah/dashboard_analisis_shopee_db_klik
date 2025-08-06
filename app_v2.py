@@ -1,7 +1,7 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.6
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.7
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Mengembalikan form Ruang Kontrol Brand ke mode terpandu (single-review)
+#  Update: Perbaikan ValueError pada styling tabel kinerja mingguan (WoW)
 # ===================================================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.6")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.7")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -98,7 +98,7 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
         
         file_query = f"'{folder['id']}' in parents and mimeType='text/csv'"
-        file_results = _drive_service.files().list(q=file_query, fields="files(id, name)").execute()
+        file_results = _drive_service.files().list(q=query, fields="files(id, name)").execute()
         csv_files = file_results.get('files', [])
 
         for csv_file in csv_files:
@@ -234,7 +234,7 @@ def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.6")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.7")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -400,7 +400,16 @@ elif page == "Analisis Mendalam":
         weekly_summary_display = weekly_summary.copy()
         weekly_summary_display['Omzet'] = weekly_summary_display['Omzet'].apply(format_harga)
         weekly_summary_display['Pertumbuhan Omzet (WoW)'] = weekly_summary_display['Pertumbuhan Omzet (WoW)'].apply(format_wow_growth)
-        st.dataframe(weekly_summary_display[['Minggu', 'Omzet', 'Penjualan_Unit', 'Pertumbuhan Omzet (WoW)']].style.apply(lambda col: col.map(colorize_growth)), use_container_width=True, hide_index=True)
+        
+        # --- PERBAIKAN V3.7: Menggunakan .applymap dengan subset ---
+        st.dataframe(
+            weekly_summary_display[['Minggu', 'Omzet', 'Penjualan_Unit', 'Pertumbuhan Omzet (WoW)']].style.applymap(
+                colorize_growth,
+                subset=['Pertumbuhan Omzet (WoW)']
+            ),
+            use_container_width=True,
+            hide_index=True
+        )
 
         st.subheader("2. Detail Produk di Toko Anda (Data Terbaru)")
         if not main_store_df.empty:
@@ -498,7 +507,20 @@ elif page == "Analisis Mendalam":
             final_summary['Rata-Rata Terjual Harian'] = (final_summary['Total_Terjual'] / 7).round().astype(int)
             display_cols = {'Minggu': 'Mulai Minggu', 'Toko': 'Toko', 'Total_Omzet': 'Total Omzet', 'Pertumbuhan Omzet (WoW)': 'Pertumbuhan Omzet (WoW)', 'Total_Terjual': 'Total Terjual', 'Rata-Rata Terjual Harian': 'Rata-Rata Terjual Harian', 'Rata_Rata_Harga': 'Rata-Rata Harga'}
             final_summary_display = final_summary.rename(columns=display_cols)
-            st.dataframe(final_summary_display.style.format({'Total Omzet': format_harga, 'Rata-Rata Harga': format_harga, 'Pertumbuhan Omzet (WoW)': format_wow_growth}).apply(lambda col: col.map(colorize_growth) if col.name == 'Pertumbuhan Omzet (WoW)' else None), use_container_width=True, hide_index=True)
+            
+            # --- PERBAIKAN V3.7: Menggunakan .applymap dengan subset ---
+            st.dataframe(
+                final_summary_display.style.format({
+                    'Total Omzet': format_harga,
+                    'Rata-Rata Harga': format_harga,
+                    'Pertumbuhan Omzet (WoW)': format_wow_growth
+                }).applymap(
+                    colorize_growth,
+                    subset=['Pertumbuhan Omzet (WoW)']
+                ),
+                use_container_width=True,
+                hide_index=True
+            )
 
     with tab6:
         st.header("Analisis Produk Baru Mingguan")
@@ -571,7 +593,6 @@ elif page == "Ruang Kontrol Brand":
     else:
         st.warning(f"Ditemukan **{len(unknown_df)} produk** yang brand-nya tidak dikenali oleh sistem.")
         
-        # Ambil satu produk untuk direview
         product_to_review = unknown_df.iloc[0]
         st.divider()
         st.write("Produk yang perlu direview:")
@@ -582,16 +603,13 @@ elif page == "Ruang Kontrol Brand":
             
             col1, col2 = st.columns(2)
             
-            # Opsi 1: Pilih dari brand yang sudah ada
             brand_list = [""] + sorted(st.session_state.brand_db)
             selected_brand = col1.selectbox("1. Pilih dari brand yang sudah ada:", options=brand_list, help="Pilih brand yang paling sesuai dari daftar.")
             
-            # Opsi 2: Masukkan brand baru
             new_brand_input = col2.text_input("2. Atau, masukkan nama brand BARU:", help="Isi ini jika brand tidak ada di daftar sebelah.")
             
             st.divider()
             
-            # Opsi 3: Definisikan Alias
             st.subheader("Ajari sistem tentang Alias (Nama Lain)")
             alias_input = st.text_input("Jika produk ini punya nama lain/singkatan, masukkan di sini:", 
                                         help="Contoh: Nama produk 'MI NOTEBOOK', Brand Utama 'XIAOMI'. Maka isi alias ini dengan 'MI'.")
@@ -600,7 +618,6 @@ elif page == "Ruang Kontrol Brand":
 
             if submitted:
                 final_brand = ""
-                # Prioritaskan brand baru jika diisi
                 if new_brand_input:
                     final_brand = new_brand_input.strip().upper()
                 elif selected_brand:
@@ -610,14 +627,12 @@ elif page == "Ruang Kontrol Brand":
                     st.error("Anda harus memilih brand yang sudah ada atau memasukkan brand baru.")
                 else:
                     correction_made = False
-                    # Proses penambahan brand baru
                     if new_brand_input and final_brand not in st.session_state.brand_db:
                         if update_google_sheet(gsheets_service, SPREADSHEET_ID, DB_SHEET_NAME, [final_brand]):
                             st.success(f"Brand baru '{final_brand}' berhasil ditambahkan ke database.")
-                            st.session_state.brand_db.append(final_brand) # Update state
+                            st.session_state.brand_db.append(final_brand)
                             correction_made = True
                     
-                    # Proses penambahan alias
                     if alias_input:
                         if update_google_sheet(gsheets_service, SPREADSHEET_ID, KAMUS_SHEET_NAME, [alias_input.strip().upper(), final_brand]):
                             st.success(f"Pelajaran baru disimpan: Alias '{alias_input.upper()}' sekarang akan dikenali sebagai '{final_brand}'.")
@@ -626,7 +641,6 @@ elif page == "Ruang Kontrol Brand":
                     if not correction_made and not new_brand_input:
                         st.warning("Tidak ada pelajaran baru yang ditambahkan. Jika hanya ingin mengklasifikasikan tanpa alias, pastikan brand dipilih.")
                     
-                    # Tetap anggap berhasil jika brand dipilih (meski tanpa alias baru) agar produk ini hilang dari daftar
                     if selected_brand and not alias_input:
                         st.info(f"Produk akan coba diklasifikasikan sebagai '{selected_brand}' pada penarikan data berikutnya.")
                     
