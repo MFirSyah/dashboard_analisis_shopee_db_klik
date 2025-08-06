@@ -107,7 +107,6 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
                 df = pd.read_csv(downloader)
                 df[TOKO_COL] = folder['name']
                 
-                # PERBAIKAN: Mengubah regex untuk mencocokkan format YYYY-MM-DD
                 match_tanggal = re.search(r'(\d{4}-\d{2}-\d{2})', csv_file['name'])
                 df[TANGGAL_COL] = pd.to_datetime(match_tanggal.group(1), format='%Y-%m-%d') if match_tanggal else pd.NaT
                 
@@ -208,7 +207,7 @@ def load_master_data():
     brand_db, kamus_brand, db_kategori = load_intelligence_data(gsheets_service, SPREADSHEET_ID)
     raw_df = get_all_competitor_data(drive_service, PARENT_FOLDER_ID)
     
-    if raw_df.empty:
+    if raw_df is None or raw_df.empty:
         return None, None, None, None
         
     master_df = label_brands(raw_df.copy(), brand_db, kamus_brand)
@@ -220,7 +219,7 @@ st.title("Dashboard Analisis Penjualan & Kompetitor")
 master_df, brand_db, kamus_brand, db_kategori = load_master_data()
 
 if master_df is None:
-    st.error("Gagal memuat data utama. Silakan periksa konfigurasi dan koneksi Anda.")
+    st.error("Gagal memuat data utama atau tidak ada data yang ditemukan. Silakan periksa folder Google Drive Anda.")
     st.stop()
 
 st.session_state.brand_db = brand_db
@@ -234,12 +233,14 @@ st.sidebar.header("Filter & Pengaturan")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
 main_store = st.sidebar.selectbox("Pilih Toko Utama:", all_stores, index=0 if all_stores else -1)
 
-df_labeled.dropna(subset=[TANGGAL_COL], inplace=True)
-if df_labeled.empty:
+# PERBAIKAN: Pengecekan tanggal yang valid sebelum membuat widget
+df_with_dates = df_labeled.dropna(subset=[TANGGAL_COL]).copy()
+
+if df_with_dates.empty:
     st.error("Tidak ada data dengan tanggal yang valid ditemukan. Pastikan nama file CSV Anda mengandung tanggal dengan format YYYY-MM-DD.")
     st.stop()
 
-min_date, max_date = df_labeled[TANGGAL_COL].min().date(), df_labeled[TANGGAL_COL].max().date()
+min_date, max_date = df_with_dates[TANGGAL_COL].min().date(), df_with_dates[TANGGAL_COL].max().date()
 
 selected_date_range = st.sidebar.date_input("Rentang Tanggal:", [min_date, max_date], min_value=min_date, max_value=max_date)
 if len(selected_date_range) != 2:
@@ -248,7 +249,7 @@ start_date, end_date = selected_date_range
 
 accuracy_cutoff = st.sidebar.slider("Tingkat Akurasi Pencocokan (%)", 80, 100, 91, 1)
 
-df_filtered = df_labeled[(df_labeled[TANGGAL_COL].dt.date >= start_date) & (df_labeled[TANGGAL_COL].dt.date <= end_date)].copy()
+df_filtered = df_with_dates[(df_with_dates[TANGGAL_COL].dt.date >= start_date) & (df_with_dates[TANGGAL_COL].dt.date <= end_date)].copy()
 if df_filtered.empty:
     st.error("Tidak ada data pada rentang tanggal yang dipilih."); st.stop()
 
