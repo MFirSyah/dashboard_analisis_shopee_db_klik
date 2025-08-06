@@ -124,10 +124,9 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         
         final_df = pd.concat(all_data, ignore_index=True)
         
-        # PERBAIKAN: Membuat kolom opsional secara defensif
         for col in [HARGA_COL, TERJUAL_COL]:
             if col not in final_df.columns:
-                final_df[col] = 0 # Buat kolom jika tidak ada
+                final_df[col] = 0
             final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
         
         final_df[TERJUAL_COL] = final_df[TERJUAL_COL].fillna(0).astype(int)
@@ -188,6 +187,15 @@ def format_harga_aman(x):
     try: return f"Rp {float(x):,.0f}"
     except (ValueError, TypeError): return str(x)
 
+def colorize_growth(val):
+    """Memberi warna pada teks pertumbuhan: hijau untuk naik, merah untuk turun."""
+    if isinstance(val, str):
+        if '▲' in val:
+            return 'color: #28a745' # Green
+        elif '▼' in val:
+            return 'color: #dc3545' # Red
+    return 'color: inherit' # Warna default
+
 @st.cache_data
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
@@ -208,14 +216,12 @@ def load_master_data():
 # --- TAMPILAN APLIKASI STREAMLIT ---
 st.title("Dashboard Analisis Penjualan & Kompetitor")
 
-# Memuat data secara otomatis
 master_df, brand_db, kamus_brand, db_kategori = load_master_data()
 
 if master_df is None:
     st.error("Gagal memuat data utama. Silakan periksa konfigurasi dan koneksi Anda.")
     st.stop()
 
-# Menyimpan data yang sudah dimuat ke session state untuk digunakan di Ruang Kontrol
 st.session_state.brand_db = brand_db
 st.session_state.kamus_brand = kamus_brand
 st.session_state.master_df = master_df
@@ -243,7 +249,6 @@ df_filtered['Minggu'] = df_filtered[TANGGAL_COL].dt.to_period('W-SUN').apply(lam
 main_store_df = df_filtered[df_filtered[TOKO_COL] == main_store].copy()
 competitor_df = df_filtered[df_filtered[TOKO_COL] != main_store].copy()
 
-# --- Download Button ---
 csv_to_download = convert_df_to_csv(df_filtered)
 st.sidebar.download_button(
    label="📥 Download Data Analisis (CSV)",
@@ -252,7 +257,6 @@ st.sidebar.download_button(
    mime='text/csv',
 )
 
-# --- Navigasi Halaman Utama ---
 st.sidebar.header("Navigasi")
 page = st.sidebar.radio("Pilih Halaman:", ["Analisis Penjualan", "Produk Belum Ternamai"])
 
@@ -306,8 +310,9 @@ if page == "Analisis Penjualan":
         st.subheader("1. Ringkasan Kinerja Mingguan (WoW Growth)")
         weekly_summary = main_store_df.groupby('Minggu').agg(Omzet=(OMZET_COL, 'sum'), Penjualan_Unit=(TERJUAL_COL, 'sum')).reset_index()
         weekly_summary['Pertumbuhan Omzet (WoW)'] = weekly_summary['Omzet'].pct_change().apply(format_wow_growth)
-        weekly_summary['Omzet'] = weekly_summary['Omzet'].apply(format_harga_aman)
-        st.dataframe(weekly_summary, use_container_width=True, hide_index=True)
+        weekly_summary_display = weekly_summary.copy()
+        weekly_summary_display['Omzet'] = weekly_summary_display['Omzet'].apply(format_harga_aman)
+        st.dataframe(weekly_summary_display.style.applymap(colorize_growth, subset=['Pertumbuhan Omzet (WoW)']), use_container_width=True, hide_index=True)
 
         st.subheader("2. Detail Produk di Toko Anda (Data Terbaru)")
         if not main_store_df.empty:
@@ -423,13 +428,14 @@ if page == "Analisis Penjualan":
             final_summary = pd.concat(summary_list)
             final_summary['Rata_Rata_Terjual_Harian'] = (final_summary['Total_Terjual'] / 7).round().astype(int)
             
-            final_summary['Pertumbuhan Omzet (WoW)'] = final_summary['Pertumbuhan Omzet (WoW)'].apply(format_wow_growth)
-            final_summary['Total Omzet'] = final_summary['Total_Omzet'].apply(format_harga_aman)
-            final_summary['Rata-Rata Harga'] = final_summary['Rata_Rata_Harga'].apply(format_harga_aman)
+            final_summary_display = final_summary.copy()
+            final_summary_display['Pertumbuhan Omzet (WoW)'] = final_summary_display['Pertumbuhan Omzet (WoW)'].apply(format_wow_growth)
+            final_summary_display['Total Omzet'] = final_summary_display['Total Omzet'].apply(format_harga_aman)
+            final_summary_display['Rata-Rata Harga'] = final_summary_display['Rata_Rata_Harga'].apply(format_harga_aman)
 
-            st.dataframe(final_summary[['Minggu', 'Toko', 'Total Omzet', 'Pertumbuhan Omzet (WoW)', 'Total_Terjual', 'Rata_Rata_Terjual_Harian', 'Rata-Rata Harga']].rename(
+            st.dataframe(final_summary_display[['Minggu', 'Toko', 'Total Omzet', 'Pertumbuhan Omzet (WoW)', 'Total_Terjual', 'Rata_Rata_Terjual_Harian', 'Rata-Rata Harga']].rename(
                 columns={'Total_Terjual': 'Total Terjual'}
-            ), use_container_width=True, hide_index=True)
+            ).style.applymap(colorize_growth, subset=['Pertumbuhan Omzet (WoW)']), use_container_width=True, hide_index=True)
 
     with tab6:
         st.header("Analisis Produk Baru Mingguan")
@@ -461,7 +467,6 @@ if page == "Analisis Penjualan":
 
 elif page == "Produk Belum Ternamai":
     st.header("Ruang Kontrol: Latih Sistem Anda")
-    # Mengambil data dari session state yang sudah dimuat
     gsheets_service = get_google_apis()[1]
     unknown_df = st.session_state.master_df[st.session_state.master_df[BRAND_COL] == 'TIDAK DIKETAHUI']
 
