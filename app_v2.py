@@ -97,7 +97,13 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
                 all_data.append(df)
         
         if not all_data: return pd.DataFrame()
-        return pd.concat(all_data, ignore_index=True)
+        
+        # PERBAIKAN: Memastikan kolom harga adalah numerik saat pertama kali dibaca
+        final_df = pd.concat(all_data, ignore_index=True)
+        if HARGA_COL in final_df.columns:
+            final_df[HARGA_COL] = pd.to_numeric(final_df[HARGA_COL], errors='coerce')
+        return final_df
+        
     except Exception as e:
         st.error(f"Terjadi kesalahan saat mengambil data CSV: {e}")
         return pd.DataFrame()
@@ -180,10 +186,21 @@ with tab1:
     st.header("Dashboard Utama")
     st.write(f"Menampilkan data untuk **{len(selected_brands)}** brand di **{len(selected_stores)}** toko.")
     
-    # PERBAIKAN: Menambahkan formatting harga
+    # PERBAIKAN: Menambahkan formatting harga yang lebih aman
     df_display = df_filtered.copy()
     if HARGA_COL in df_display.columns:
-        df_display[HARGA_COL] = df_display[HARGA_COL].apply(lambda x: f"Rp {x:,.0f}" if pd.notnull(x) else "N/A")
+        # Fungsi aman untuk format harga
+        def format_harga_aman(x):
+            if pd.isnull(x):
+                return "N/A"
+            try:
+                # Coba format sebagai angka
+                return f"Rp {float(x):,.0f}"
+            except (ValueError, TypeError):
+                # Jika gagal, kembalikan nilai aslinya
+                return str(x)
+        
+        df_display[HARGA_COL] = df_display[HARGA_COL].apply(format_harga_aman)
     st.dataframe(df_display)
 
 with tab2:
@@ -210,7 +227,6 @@ with tab4:
     st.header("Perbandingan Produk Baru")
     st.markdown("Bandingkan daftar produk antara dua minggu untuk menemukan produk baru.")
     
-    # PERBAIKAN: Menggunakan logika perbandingan per MINGGU, bukan per TANGGAL
     df_with_week = df_filtered.copy()
     df_with_week.dropna(subset=['Tanggal'], inplace=True)
     df_with_week['Minggu'] = df_with_week['Tanggal'].dt.strftime('%Y-%U') # Format Tahun-Mingguke
@@ -239,9 +255,13 @@ with tab4:
                         st.write(f"Ditemukan **{len(new_products)}** produk baru:")
                         new_products_df = df_with_week[df_with_week[NAMA_PRODUK_COL].isin(new_products) & (df_with_week['Toko'] == store) & (df_with_week['Minggu'] == week_after)]
                         
-                        # PERBAIKAN: Menambahkan formatting harga juga di sini
+                        # PERBAIKAN: Menggunakan fungsi format harga yang aman
                         if HARGA_COL in new_products_df.columns:
-                            new_products_df[HARGA_COL] = new_products_df[HARGA_COL].apply(lambda x: f"Rp {x:,.0f}" if pd.notnull(x) else "N/A")
+                            def format_harga_aman(x):
+                                if pd.isnull(x): return "N/A"
+                                try: return f"Rp {float(x):,.0f}"
+                                except (ValueError, TypeError): return str(x)
+                            new_products_df[HARGA_COL] = new_products_df[HARGA_COL].apply(format_harga_aman)
                         st.dataframe(new_products_df[[NAMA_PRODUK_COL, HARGA_COL, 'BRAND']])
 
 with tab5:
