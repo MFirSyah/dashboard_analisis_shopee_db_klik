@@ -99,7 +99,7 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         for i, folder in enumerate(subfolders):
             progress_bar.progress((i + 1) / len(subfolders), text=f"Membaca folder: {folder['name']}")
             file_query = f"'{folder['id']}' in parents and mimeType = 'text/csv'"
-            file_results = _drive_service.files().list(q=file_query, fields="files(id, name)").execute()
+            file_results = _drive_service.files().list(q=query, fields="files(id, name)").execute()
             csv_files = file_results.get('files', [])
             for csv_file in csv_files:
                 request = _drive_service.files().get_media(fileId=csv_file['id'])
@@ -107,8 +107,9 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
                 df = pd.read_csv(downloader)
                 df[TOKO_COL] = folder['name']
                 
-                match_tanggal = re.search(r'(\d{2}-\d{2}-\d{4})', csv_file['name'])
-                df[TANGGAL_COL] = pd.to_datetime(match_tanggal.group(1), format='%d-%m-%Y') if match_tanggal else pd.NaT
+                # PERBAIKAN: Mengubah regex untuk mencocokkan format YYYY-MM-DD
+                match_tanggal = re.search(r'(\d{4}-\d{2}-\d{2})', csv_file['name'])
+                df[TANGGAL_COL] = pd.to_datetime(match_tanggal.group(1), format='%Y-%m-%d') if match_tanggal else pd.NaT
                 
                 if 'ready' in csv_file['name'].lower():
                     df[STATUS_COL] = 'Tersedia'
@@ -233,7 +234,13 @@ st.sidebar.header("Filter & Pengaturan")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
 main_store = st.sidebar.selectbox("Pilih Toko Utama:", all_stores, index=0 if all_stores else -1)
 
+df_labeled.dropna(subset=[TANGGAL_COL], inplace=True)
+if df_labeled.empty:
+    st.error("Tidak ada data dengan tanggal yang valid ditemukan. Pastikan nama file CSV Anda mengandung tanggal dengan format YYYY-MM-DD.")
+    st.stop()
+
 min_date, max_date = df_labeled[TANGGAL_COL].min().date(), df_labeled[TANGGAL_COL].max().date()
+
 selected_date_range = st.sidebar.date_input("Rentang Tanggal:", [min_date, max_date], min_value=min_date, max_value=max_date)
 if len(selected_date_range) != 2:
     st.warning("Silakan pilih rentang tanggal yang valid."); st.stop()
