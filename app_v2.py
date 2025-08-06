@@ -4,7 +4,7 @@
 #  Fitur Utama:
 #  - Otomatisasi Labeling Brand dengan Sistem Multi-Lapis
 #  - "Ruang Kontrol" Interaktif untuk Melatih Sistem (Human-in-the-Loop)
-#  - Tab Analisis Mendalam (Brand, Toko, Produk Baru per Minggu)
+#  - Tab Analisis Mendalam (Brand, Toko, Produk Baru per Minggu) - Sesuai V1
 # ===================================================================================
 
 import streamlit as st
@@ -26,8 +26,9 @@ PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq"
 SPREADSHEET_ID = "1iX-LpYJrHRqD5-c2-D27kVY7PArYLaSCCd-nvd2y6Yg"
 DB_SHEET_NAME = "database_brand"
 KAMUS_SHEET_NAME = "kamus_brand"
-NAMA_PRODUK_COL = "Nama Produk" # Sesuaikan jika nama kolom produk Anda berbeda
-HARGA_COL = "Harga" # Sesuaikan jika nama kolom harga Anda berbeda
+NAMA_PRODUK_COL = "Nama Produk"
+HARGA_COL = "Harga"
+TERJUAL_COL = "Terjual per bulan" # Sesuaikan jika nama kolom berbeda
 
 # --- FUNGSI-FUNGSI UTAMA (Dengan Caching untuk Performa) ---
 
@@ -98,10 +99,11 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         
         if not all_data: return pd.DataFrame()
         
-        # PERBAIKAN: Memastikan kolom harga adalah numerik saat pertama kali dibaca
         final_df = pd.concat(all_data, ignore_index=True)
         if HARGA_COL in final_df.columns:
             final_df[HARGA_COL] = pd.to_numeric(final_df[HARGA_COL], errors='coerce')
+        if TERJUAL_COL in final_df.columns:
+            final_df[TERJUAL_COL] = pd.to_numeric(final_df[TERJUAL_COL], errors='coerce')
         return final_df
         
     except Exception as e:
@@ -182,46 +184,73 @@ df_filtered = df_labeled[(df_labeled['BRAND'].isin(selected_brands)) & (df_label
 # --- TAMPILAN UTAMA DENGAN TAB ---
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard Utama", "🏢 Analisis Toko", "🏷️ Analisis Brand", "🔍 Produk Baru", "🧠 Ruang Kontrol"])
 
+# Fungsi format harga yang aman
+def format_harga_aman(x):
+    if pd.isnull(x): return "N/A"
+    try: return f"Rp {float(x):,.0f}"
+    except (ValueError, TypeError): return str(x)
+
 with tab1:
     st.header("Dashboard Utama")
     st.write(f"Menampilkan data untuk **{len(selected_brands)}** brand di **{len(selected_stores)}** toko.")
     
-    # PERBAIKAN: Menambahkan formatting harga yang lebih aman
     df_display = df_filtered.copy()
     if HARGA_COL in df_display.columns:
-        # Fungsi aman untuk format harga
-        def format_harga_aman(x):
-            if pd.isnull(x):
-                return "N/A"
-            try:
-                # Coba format sebagai angka
-                return f"Rp {float(x):,.0f}"
-            except (ValueError, TypeError):
-                # Jika gagal, kembalikan nilai aslinya
-                return str(x)
-        
         df_display[HARGA_COL] = df_display[HARGA_COL].apply(format_harga_aman)
     st.dataframe(df_display)
 
 with tab2:
     st.header("Analisis Per Toko")
-    st.markdown("Distribusi jumlah produk per brand di setiap toko yang dipilih.")
-    store_brand_counts = df_filtered.groupby(['Toko', 'BRAND']).size().reset_index(name='Jumlah Produk')
-    fig = px.bar(store_brand_counts, x='Toko', y='Jumlah Produk', color='BRAND',
-                 title='Jumlah Produk per Brand di Setiap Toko',
-                 labels={'Jumlah Produk': 'Total Produk', 'Toko': 'Nama Toko'},
-                 barmode='stack')
-    st.plotly_chart(fig, use_container_width=True)
+    for store in selected_stores:
+        with st.expander(f"Analisis Mendalam untuk Toko: **{store}**"):
+            df_store = df_filtered[df_filtered['Toko'] == store]
+            st.write(f"#### Ringkasan Statistik untuk {store}")
+            
+            total_produk = len(df_store)
+            rata_harga = df_store[HARGA_COL].mean()
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Total Produk", f"{total_produk} SKU")
+            col2.metric("Rata-rata Harga", format_harga_aman(rata_harga))
+
+            if TERJUAL_COL in df_store.columns:
+                total_terjual = df_store[TERJUAL_COL].sum()
+                st.metric("Total Terjual (per bulan)", f"{int(total_terjual)} unit")
+            
+            st.write("---")
+            st.write("##### Produk Paling Populer (Berdasarkan Penjualan)")
+            if TERJUAL_COL in df_store.columns:
+                populer_df = df_store.nlargest(5, TERJUAL_COL)[[NAMA_PRODUK_COL, TERJUAL_COL, HARGA_COL, 'BRAND']]
+                populer_df[HARGA_COL] = populer_df[HARGA_COL].apply(format_harga_aman)
+                st.table(populer_df)
+            else:
+                st.info("Kolom 'Terjual per bulan' tidak ditemukan untuk analisis popularitas.")
+
+            st.write("##### Produk Termurah")
+            termurah_df = df_store.nsmallest(5, HARGA_COL)[[NAMA_PRODUK_COL, HARGA_COL, 'BRAND']]
+            termurah_df[HARGA_COL] = termurah_df[HARGA_COL].apply(format_harga_aman)
+            st.table(termurah_df)
+
 
 with tab3:
     st.header("Analisis Per Brand")
-    st.markdown("Distribusi jumlah produk per toko untuk setiap brand yang dipilih.")
-    brand_store_counts = df_filtered.groupby(['BRAND', 'Toko']).size().reset_index(name='Jumlah Produk')
-    fig = px.bar(brand_store_counts, x='BRAND', y='Jumlah Produk', color='Toko',
-                 title='Jumlah Produk per Toko untuk Setiap Brand',
-                 labels={'Jumlah Produk': 'Total Produk', 'BRAND': 'Nama Brand'},
-                 barmode='group')
-    st.plotly_chart(fig, use_container_width=True)
+    for brand in selected_brands:
+        with st.expander(f"Analisis Mendalam untuk Brand: **{brand}**"):
+            df_brand = df_filtered[df_filtered['BRAND'] == brand]
+            st.write(f"#### Ringkasan Statistik untuk {brand}")
+
+            total_produk_brand = len(df_brand)
+            rata_harga_brand = df_brand[HARGA_COL].mean()
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Total Produk", f"{total_produk_brand} SKU")
+            col2.metric("Rata-rata Harga", format_harga_aman(rata_harga_brand))
+
+            st.write(f"##### Distribusi Produk '{brand}' di Berbagai Toko")
+            distribusi_toko = df_brand['Toko'].value_counts().reset_index()
+            distribusi_toko.columns = ['Toko', 'Jumlah Produk']
+            fig = px.pie(distribusi_toko, names='Toko', values='Jumlah Produk', title=f"Pangsa Pasar Produk {brand} per Toko")
+            st.plotly_chart(fig, use_container_width=True)
 
 with tab4:
     st.header("Perbandingan Produk Baru")
@@ -229,7 +258,7 @@ with tab4:
     
     df_with_week = df_filtered.copy()
     df_with_week.dropna(subset=['Tanggal'], inplace=True)
-    df_with_week['Minggu'] = df_with_week['Tanggal'].dt.strftime('%Y-%U') # Format Tahun-Mingguke
+    df_with_week['Minggu'] = df_with_week['Tanggal'].dt.strftime('%Y-%U')
     
     available_weeks = sorted(df_with_week['Minggu'].unique())
     
@@ -255,12 +284,7 @@ with tab4:
                         st.write(f"Ditemukan **{len(new_products)}** produk baru:")
                         new_products_df = df_with_week[df_with_week[NAMA_PRODUK_COL].isin(new_products) & (df_with_week['Toko'] == store) & (df_with_week['Minggu'] == week_after)]
                         
-                        # PERBAIKAN: Menggunakan fungsi format harga yang aman
                         if HARGA_COL in new_products_df.columns:
-                            def format_harga_aman(x):
-                                if pd.isnull(x): return "N/A"
-                                try: return f"Rp {float(x):,.0f}"
-                                except (ValueError, TypeError): return str(x)
                             new_products_df[HARGA_COL] = new_products_df[HARGA_COL].apply(format_harga_aman)
                         st.dataframe(new_products_df[[NAMA_PRODUK_COL, HARGA_COL, 'BRAND']])
 
