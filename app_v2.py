@@ -231,10 +231,10 @@ def format_harga(x):
     except (ValueError, TypeError): return str(x)
 
 def colorize_growth(val):
-    color = 'grey' # Warna default untuk N/A atau 0
+    color = 'FFD65A' # Warna default untuk N/A atau 0
     if isinstance(val, str):
-        if '▲' in val: color = '#28a745' # Hijau
-        elif '▼' in val: color = '#dc3545' # Merah
+        if '▲' in val: color = '#16C47F' # Hijau
+        elif '▼' in val: color = '#F93827' # Merah
     return f'color: {color}'
 
 @st.cache_data
@@ -655,3 +655,4 @@ elif page == "Ruang Kontrol Brand":
                     st.cache_data.clear()
                     st.cache_resource.clear()
                     st.rerun()
+
