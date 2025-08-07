@@ -397,7 +397,7 @@ elif page == "Analisis Mendalam":
 
         st.subheader("2. Produk Terlaris")
         top_products = main_store_df.sort_values(TERJUAL_COL, ascending=False).head(15)[[NAMA_PRODUK_COL, TERJUAL_COL, OMZET_COL]]
-        st.dataframe(top_products.style.format({OMZET_COL: format_harga}), use_container_width=True, hide_index=True)
+        st.dataframe(top_products.style.format({OMZET_COL: format_harga, TERJUAL_COL: '{:,.0f}'}), use_container_width=True, hide_index=True)
 
         st.subheader("3. Distribusi Omzet Brand")
         brand_omzet_main = main_store_df.groupby(BRAND_COL)[OMZET_COL].sum().reset_index()
@@ -424,7 +424,7 @@ elif page == "Analisis Mendalam":
         weekly_summary_display['Pertumbuhan Omzet (WoW)'] = weekly_summary_display['Pertumbuhan Omzet (WoW)'].apply(format_wow_growth)
         
         st.dataframe(
-            weekly_summary_display[['Minggu', 'Omzet', 'Penjualan_Unit', 'Pertumbuhan Omzet (WoW)']].style.applymap(
+            weekly_summary_display[['Minggu', 'Omzet', 'Penjualan_Unit', 'Pertumbuhan Omzet (WoW)']].style.format({'Penjualan_Unit': '{:,.0f}'}).applymap(
                 colorize_growth,
                 subset=['Pertumbuhan Omzet (WoW)']
             ),
@@ -487,7 +487,7 @@ elif page == "Analisis Mendalam":
                         fig_bar_comp = px.bar(brand_comp_sorted, x=BRAND_COL, y='Total_Omzet', title=f"Top {top_n_brand_comp} Brand", text=brand_comp_sorted['Total_Omzet'].apply(format_harga))
                         st.plotly_chart(fig_bar_comp, use_container_width=True)
                     st.write("**Tabel Peringkat Brand**")
-                    st.dataframe(brand_analysis.sort_values("Total_Omzet", ascending=False).style.format({'Total_Omzet': format_harga}), use_container_width=True, hide_index=True)
+                    st.dataframe(brand_analysis.sort_values("Total_Omzet", ascending=False).style.format({'Total_Omzet': format_harga, 'Total_Unit_Terjual': '{:,.0f}'}), use_container_width=True, hide_index=True)
                     st.markdown("---")
                     st.write("**Lihat Detail Penjualan per Brand**")
                     brand_options = sorted(single_competitor_df[BRAND_COL].dropna().unique())
@@ -533,7 +533,8 @@ elif page == "Analisis Mendalam":
                 final_summary_display.style.format({
                     'Total Omzet': format_harga,
                     'Rata-Rata Harga': format_harga,
-                    'Pertumbuhan Omzet (WoW)': format_wow_growth
+                    'Pertumbuhan Omzet (WoW)': format_wow_growth,
+                    'Total Terjual': '{:,.0f}'
                 }).applymap(
                     colorize_growth,
                     subset=['Pertumbuhan Omzet (WoW)']
@@ -599,7 +600,7 @@ elif page == "Analisis Produk Tunggal":
         
         competitor_landscape = latest_products_df[latest_products_df[NAMA_PRODUK_COL].isin(similar_product_names)]
         
-        st.dataframe(competitor_landscape[[TOKO_COL, NAMA_PRODUK_COL, HARGA_COL, STATUS_COL, TERJUAL_COL]].style.format({HARGA_COL: format_harga}), use_container_width=True, hide_index=True)
+        st.dataframe(competitor_landscape[[TOKO_COL, NAMA_PRODUK_COL, HARGA_COL, STATUS_COL, TERJUAL_COL]].style.format({HARGA_COL: format_harga, TERJUAL_COL: '{:,.0f}'}), use_container_width=True, hide_index=True)
 
 
 elif page == "Ruang Kontrol Brand":
