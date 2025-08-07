@@ -1,7 +1,7 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.3
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.4
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Mengubah format angka penjualan menjadi bilangan bulat (integer)
+#  Update: Perbaikan format angka & penambahan kolom omzet di tabel detail kategori
 # ===================================================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.3")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.4")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -165,7 +165,6 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         final_df[TERJUAL_COL] = 0
     
     final_df[HARGA_COL] = final_df[HARGA_COL].astype(float)
-    # --- PERBAIKAN V4.3: Mengubah tipe data menjadi integer ---
     final_df[TERJUAL_COL] = final_df[TERJUAL_COL].astype(int)
     
     final_df[OMZET_COL] = final_df[HARGA_COL] * final_df[TERJUAL_COL]
@@ -247,7 +246,7 @@ def convert_df_to_json(df):
     return df_copy.to_json(orient='records', indent=4).encode('utf-8')
 
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.3")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.4")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -290,7 +289,7 @@ st.sidebar.divider()
 st.sidebar.header("Filter Global")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
 try:
-    default_store_index = all_stores.index("DB_KLIK")
+    default_store_index = all_stores.index("DB KLIK")
 except ValueError:
     default_store_index = 0
 main_store = st.sidebar.selectbox("Pilih Toko Utama Anda:", all_stores, index=default_store_index)
@@ -375,7 +374,7 @@ elif page == "Analisis Mendalam":
         st.header(f"Analisis Kinerja Toko: {main_store}")
         st.subheader("1. Kategori Produk Terlaris")
         
-        if main_store.strip() == "DB_KLIK":
+        if main_store.strip() == "DB KLIK":
             main_store_df_cat = map_categories(main_store_df.copy(), db_kategori)
             category_sales = main_store_df_cat.groupby(KATEGORI_COL)[TERJUAL_COL].sum().reset_index()
             if not category_sales.empty:
@@ -391,9 +390,18 @@ elif page == "Analisis Mendalam":
                 selected_cat_details = st.selectbox("Pilih kategori untuk melihat produknya:", options=categories_in_chart)
                 if selected_cat_details:
                     detail_cat_df = main_store_df_cat[main_store_df_cat[KATEGORI_COL] == selected_cat_details]
-                    st.dataframe(detail_cat_df[[NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL, STATUS_COL]].style.format({HARGA_COL: format_harga}), use_container_width=True, hide_index=True)
+                    # --- PERBAIKAN V4.4: Menambahkan kolom Omzet dan format angka ---
+                    st.dataframe(
+                        detail_cat_df[[NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL, OMZET_COL, STATUS_COL]].style.format({
+                            HARGA_COL: format_harga,
+                            TERJUAL_COL: '{:,.0f}',
+                            OMZET_COL: format_harga
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
         else:
-            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB_KLIK'.")
+            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB KLIK'.")
 
         st.subheader("2. Produk Terlaris")
         top_products = main_store_df.sort_values(TERJUAL_COL, ascending=False).head(15)[[NAMA_PRODUK_COL, TERJUAL_COL, OMZET_COL]]
