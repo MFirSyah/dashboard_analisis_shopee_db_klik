@@ -1,3 +1,9 @@
+# ===================================================================================
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.9
+#  Dibuat oleh: Firman & Asisten AI Gemini
+#  Update: Perbaikan HttpError 403 dengan menambahkan logika ekspor Google Sheets
+# ===================================================================================
+
 import streamlit as st
 import pandas as pd
 import gspread
@@ -10,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.6")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.9")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -38,7 +44,7 @@ def get_google_apis():
     try:
         creds = Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
-            scopes=["[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)", "[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)"],
+            scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"],
         )
         drive_service = build('drive', 'v3', credentials=creds)
         gsheets_service = gspread.authorize(creds)
@@ -75,7 +81,7 @@ def load_intelligence_data(_gsheets_service, spreadsheet_id):
 @st.cache_data(show_spinner="Membaca semua data dari folder kompetitor...", ttl=300)
 def get_all_competitor_data(_drive_service, parent_folder_id):
     """
-    (V3.4 Logic) Membaca, menstandarkan, dan membersihkan data dari semua file CSV.
+    (V3.9 Logic) Membaca file CSV asli dan Google Sheets.
     """
     all_data = []
     query = f"'{parent_folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder'"
@@ -91,16 +97,23 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         progress_text = f"Membaca folder toko: {folder['name']}..."
         progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
         
-        file_query = f"'{folder['id']}' in parents and mimeType='text/csv'"
-        file_results = _drive_service.files().list(q=file_query, fields="files(id, name)").execute()
-        csv_files = file_results.get('files', [])
+        # --- PERBAIKAN V3.9: Cari file CSV dan Google Sheet ---
+        file_query = f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet')"
+        file_results = _drive_service.files().list(q=file_query, fields="files(id, name, mimeType)").execute()
+        files_in_folder = file_results.get('files', [])
 
-        for csv_file in csv_files:
-            file_id = csv_file.get('id')
-            file_name = csv_file.get('name')
+        for file_item in files_in_folder:
+            file_id = file_item.get('id')
+            file_name = file_item.get('name')
+            mime_type = file_item.get('mimeType')
             
             try:
-                request = _drive_service.files().get_media(fileId=file_id)
+                # --- PERBAIKAN V3.9: Logika untuk download vs export ---
+                if mime_type == 'application/vnd.google-apps.spreadsheet':
+                    request = _drive_service.files().export_media(fileId=file_id, mimeType='text/csv')
+                else: # Ini untuk file text/csv asli
+                    request = _drive_service.files().get_media(fileId=file_id)
+
                 downloader = io.BytesIO(request.execute())
                 
                 if downloader.getbuffer().nbytes == 0:
@@ -217,27 +230,18 @@ def format_harga(x):
     except (ValueError, TypeError): return str(x)
 
 def colorize_growth(val):
-    color = 'grey' # Warna default untuk N/A atau 0
+    color = 'FFD65A' # Warna default untuk N/A atau 0
     if isinstance(val, str):
-        if '▲' in val: color = '#28a745' # Hijau
-        elif '▼' in val: color = '#dc3545' # Merah
+        if '▲' in val: color = '#16C47F' # Hijau
+        elif '▼' in val: color = '#F93827' # Merah
     return f'color: {color}'
 
 @st.cache_data
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
-# --- FUNGSI BARU v4.2 ---
-@st.cache_data
-def convert_df_to_json(df):
-    # Mengubah kolom tanggal menjadi string agar kompatibel dengan JSON
-    df_copy = df.copy()
-    for col in df_copy.select_dtypes(include=['datetime64[ns]']).columns:
-        df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d')
-    return df_copy.to_json(orient='records', indent=4).encode('utf-8')
-
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.2")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.9")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -280,7 +284,7 @@ st.sidebar.divider()
 st.sidebar.header("Filter Global")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
 try:
-    default_store_index = all_stores.index("DB KLIK")
+    default_store_index = all_stores.index("DB_KLIK")
 except ValueError:
     default_store_index = 0
 main_store = st.sidebar.selectbox("Pilih Toko Utama Anda:", all_stores, index=default_store_index)
@@ -292,26 +296,11 @@ selected_date_range = st.sidebar.date_input("Rentang Tanggal:", [min_date, max_d
 accuracy_cutoff = st.sidebar.slider("Tingkat Akurasi Pencocokan (%)", 80, 100, 91, 1, key="global_accuracy", help="Digunakan untuk membandingkan produk antar toko.")
 
 st.sidebar.divider()
-st.sidebar.header("Download Data")
-
-# Tombol Download CSV
 csv_to_download = convert_df_to_csv(master_df)
 st.sidebar.download_button(
-   label="📥 Download Data Olahan (CSV)",
-   data=csv_to_download,
-   file_name='data_olahan.csv',
-   mime='text/csv',
+   label="📥 Download Data Olahan (CSV)", data=csv_to_download,
+   file_name=f'data_olahan.csv', mime='text/csv',
 )
-
-# Tombol Download JSON
-json_to_download = convert_df_to_json(master_df)
-st.sidebar.download_button(
-   label="📥 Download Data Olahan (JSON)",
-   data=json_to_download,
-   file_name='data_olahan.json',
-   mime='application/json',
-)
-
 
 if len(selected_date_range) != 2: st.stop()
 start_date, end_date = selected_date_range
@@ -372,7 +361,7 @@ elif page == "Analisis Mendalam":
         st.header(f"Analisis Kinerja Toko: {main_store}")
         st.subheader("1. Kategori Produk Terlaris")
         
-        if main_store.strip() == "DB KLIK":
+        if main_store.strip() == "DB_KLIK":
             main_store_df_cat = map_categories(main_store_df.copy(), db_kategori)
             category_sales = main_store_df_cat.groupby(KATEGORI_COL)[TERJUAL_COL].sum().reset_index()
             if not category_sales.empty:
@@ -390,7 +379,7 @@ elif page == "Analisis Mendalam":
                     detail_cat_df = main_store_df_cat[main_store_df_cat[KATEGORI_COL] == selected_cat_details]
                     st.dataframe(detail_cat_df[[NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL, STATUS_COL]].style.format({HARGA_COL: format_harga}), use_container_width=True, hide_index=True)
         else:
-            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB KLIK'.")
+            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB_KLIK'.")
 
         st.subheader("2. Produk Terlaris")
         top_products = main_store_df.sort_values(TERJUAL_COL, ascending=False).head(15)[[NAMA_PRODUK_COL, TERJUAL_COL, OMZET_COL]]
@@ -523,7 +512,7 @@ elif page == "Analisis Mendalam":
         if summary_list:
             final_summary = pd.concat(summary_list, ignore_index=True)
             final_summary['Rata-Rata Terjual Harian'] = (final_summary['Total_Terjual'] / 7).round().astype(int)
-            display_cols = {'Minggu': 'Mulai Minggu', 'Toko': 'Toko', 'Total_Omzet': 'Total Omzet', 'Pertumbuhan Omzet (WoW)': 'Pertumbuhan Omzet (WoW)', 'Total_Terjual': 'Total Terjual', 'Rata-Rata Terjual Harian': 'Rata-Rata Terjual Harian', 'Rata-Rata Harga': 'Rata-Rata Harga'}
+            display_cols = {'Minggu': 'Mulai Minggu', 'Toko': 'Toko', 'Total_Omzet': 'Total Omzet', 'Pertumbuhan Omzet (WoW)': 'Pertumbuhan Omzet (WoW)', 'Total_Terjual': 'Total Terjual', 'Rata-Rata Terjual Harian': 'Rata-Rata Terjual Harian', 'Rata_Rata_Harga': 'Rata-Rata Harga'}
             final_summary_display = final_summary.rename(columns=display_cols)
             
             st.dataframe(
@@ -665,4 +654,3 @@ elif page == "Ruang Kontrol Brand":
                     st.cache_data.clear()
                     st.cache_resource.clear()
                     st.rerun()
-
