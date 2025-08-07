@@ -1,7 +1,7 @@
 # ===================================================================================
 #  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 5.0
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Perbaikan AttributeError pada format tanggal di tabel Ringkasan Eksekutif
+#  Update: Perbaikan logika perhitungan metrik di Ringkasan Eksekutif
 # ===================================================================================
 
 import streamlit as st
@@ -289,7 +289,7 @@ st.sidebar.divider()
 st.sidebar.header("Filter Global")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
 try:
-    default_store_index = all_stores.index("DB KLIK")
+    default_store_index = all_stores.index("DB_KLIK")
 except ValueError:
     default_store_index = 0
 main_store = st.sidebar.selectbox("Pilih Toko Utama Anda:", all_stores, index=default_store_index)
@@ -336,16 +336,19 @@ if page == "Ringkasan Eksekutif":
     omzet_today_main = df_latest[df_latest[TOKO_COL] == main_store][OMZET_COL].sum()
     units_today_main = df_latest[df_latest[TOKO_COL] == main_store][TERJUAL_COL].sum()
     
-    total_ready = len(df_filtered[df_filtered[STATUS_COL] == 'Tersedia'])
-    total_habis = len(df_filtered[df_filtered[STATUS_COL] == 'Habis'])
-    total_produk_periode = total_ready + total_habis
+    # --- PERBAIKAN V5.0: Metrik 2 ---
+    # Hitung jumlah produk (baris) HANYA dari tanggal terbaru
+    total_ready_latest = len(df_latest[df_latest[STATUS_COL] == 'Tersedia'])
+    total_habis_latest = len(df_latest[df_latest[STATUS_COL] == 'Habis'])
+    total_produk_latest = total_ready_latest + total_habis_latest
     
+    # Metrik 3: Hitung jumlah unit terjual HANYA dari produk READY pada tanggal terbaru
     units_sold_latest_ready = df_latest[df_latest[STATUS_COL] == 'Tersedia'][TERJUAL_COL].sum()
     
     col1, col2, col3 = st.columns(3)
     col1.metric(f"Omzet {main_store} (Hari Ini)", format_harga(omzet_today_main), f"{int(units_today_main)} unit terjual")
-    col2.metric("Total Produk (Periode Dipilih)", f"{total_produk_periode:,} Produk", f"Tersedia: {total_ready:,} | Habis: {total_habis:,}")
-    col3.metric("Unit Terjual (Ready Hari Ini)", f"{int(units_sold_latest_ready):,} Unit")
+    col2.metric("Jumlah Produk (Hari Ini)", f"{total_produk_latest:,} Produk", f"Tersedia: {total_ready_latest:,} | Habis: {total_habis_latest:,}")
+    col3.metric("Unit Terjual (Ready, Hari Ini)", f"{int(units_sold_latest_ready):,} Unit")
     
     st.divider()
 
@@ -379,7 +382,7 @@ elif page == "Analisis Mendalam":
         st.header(f"Analisis Kinerja Toko: {main_store}")
         st.subheader("1. Kategori Produk Terlaris")
         
-        if main_store.strip() == "DB KLIK":
+        if main_store.strip() == "DB_KLIK":
             main_store_df_cat = map_categories(main_store_df.copy(), db_kategori)
             category_sales = main_store_df_cat.groupby(KATEGORI_COL)[TERJUAL_COL].sum().reset_index()
             if not category_sales.empty:
@@ -405,7 +408,7 @@ elif page == "Analisis Mendalam":
                         hide_index=True
                     )
         else:
-            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB KLIK'.")
+            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB_KLIK'.")
 
         st.subheader("2. Produk Terlaris")
         top_products = main_store_df.sort_values(TERJUAL_COL, ascending=False).head(15)[[NAMA_PRODUK_COL, TERJUAL_COL, OMZET_COL]]
