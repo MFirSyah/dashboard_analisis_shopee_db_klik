@@ -1,7 +1,7 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.5
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.6
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Perbaikan final pada logika pembacaan file Google Sheet
+#  Update: Perubahan total pada halaman Ringkasan Eksekutif sesuai brief baru
 # ===================================================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.5")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.6")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -98,7 +98,6 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
         
         file_query = f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet')"
-        # --- PERBAIKAN V4.5: Menggunakan variabel `file_query` yang benar ---
         file_results = _drive_service.files().list(q=file_query, fields="files(id, name, mimeType)").execute()
         files_in_folder = file_results.get('files', [])
 
@@ -247,7 +246,7 @@ def convert_df_to_json(df):
     return df_copy.to_json(orient='records', indent=4).encode('utf-8')
 
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.5")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.6")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -290,7 +289,7 @@ st.sidebar.divider()
 st.sidebar.header("Filter Global")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
 try:
-    default_store_index = all_stores.index("DB_KLIK")
+    default_store_index = all_stores.index("DB KLIK")
 except ValueError:
     default_store_index = 0
 main_store = st.sidebar.selectbox("Pilih Toko Utama Anda:", all_stores, index=default_store_index)
@@ -328,43 +327,46 @@ competitor_df = df_filtered[df_filtered[TOKO_COL] != main_store].copy()
 
 if page == "Ringkasan Eksekutif":
     st.header("📈 Ringkasan Eksekutif")
-    st.markdown(f"Analisis untuk periode **{start_date.strftime('%d %b %Y')}** sampai **{end_date.strftime('%d %b %Y')}**")
     
-    total_omzet_main = main_store_df[OMZET_COL].sum()
-    total_unit_main = main_store_df[TERJUAL_COL].sum()
-    total_omzet_comp = competitor_df[OMZET_COL].sum()
-    total_unit_comp = competitor_df[TERJUAL_COL].sum()
+    # --- PERUBAHAN V4.6: Logika baru untuk Ringkasan Eksekutif ---
+    latest_date_in_data = df_filtered[TANGGAL_COL].max()
+    st.markdown(f"Menampilkan data terbaru per tanggal **{latest_date_in_data.strftime('%d %b %Y')}**")
+    
+    df_latest = df_filtered[df_filtered[TANGGAL_COL] == latest_date_in_data]
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric(f"Omzet Toko Anda ({main_store})", format_harga(total_omzet_main), f"{int(total_unit_main)} unit terjual")
-    col2.metric("Total Omzet Kompetitor", format_harga(total_omzet_comp), f"{int(total_unit_comp)} unit terjual")
+    # Metrik 1: Omzet Toko Anda pada tanggal terbaru
+    omzet_today_main = df_latest[df_latest[TOKO_COL] == main_store][OMZET_COL].sum()
+    units_today_main = df_latest[df_latest[TOKO_COL] == main_store][TERJUAL_COL].sum()
     
-    if len(df_filtered['Minggu'].unique()) > 1:
-        first_week_products = set(df_filtered[df_filtered['Minggu'] == df_filtered['Minggu'].min()][NAMA_PRODUK_COL])
-        last_week_products = set(df_filtered[df_filtered['Minggu'] == df_filtered['Minggu'].max()][NAMA_PRODUK_COL])
-        new_products_count = len(last_week_products - first_week_products)
-    else:
-        new_products_count = 0
-    col3.metric("Produk Baru Terdeteksi", f"{new_products_count} produk")
+    # Metrik 2: Total Produk Ready & Habis (seluruh periode)
+    total_ready = len(df_filtered[df_filtered[STATUS_COL] == 'Tersedia'])
+    total_habis = len(df_filtered[df_filtered[STATUS_COL] == 'Habis'])
+    
+    # Metrik 3: Penjumlahan produk ready & habis dari tanggal terbaru
+    total_produk_latest = len(df_latest)
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric(f"Omzet {main_store} (Hari Ini)", format_harga(omzet_today_main), f"{int(units_today_main)} unit terjual")
+    col2.metric("Total Produk (Periode Dipilih)", f"{total_ready + total_habis:,} Produk", f"Tersedia: {total_ready:,} | Habis: {total_habis:,}")
+    col3.metric("Total Produk (Hari Ini)", f"{total_produk_latest:,} Produk")
+    
+    st.divider()
+
+    # Bar Chart Perbandingan Omzet Terbaru
+    st.subheader("Perbandingan Omzet per Toko (Data Terbaru)")
+    omzet_latest_per_store = df_latest.groupby(TOKO_COL)[OMZET_COL].sum().sort_values(ascending=False).reset_index()
+    fig_bar = px.bar(omzet_latest_per_store, x=TOKO_COL, y=OMZET_COL, title=f"Total Omzet per Toko pada {latest_date_in_data.strftime('%d %b %Y')}", text_auto=True)
+    fig_bar.update_traces(texttemplate='%{value:,.0f}')
+    st.plotly_chart(fig_bar, use_container_width=True)
     
     st.divider()
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Komposisi Omzet Pasar")
-        if total_omzet_main > 0 or total_omzet_comp > 0:
-            market_share_df = pd.DataFrame({'Pihak': ['Toko Anda', 'Kompetitor'], 'Omzet': [total_omzet_main, total_omzet_comp]})
-            fig_pie = px.pie(market_share_df, names='Pihak', values='Omzet', hole=0.4, color_discrete_sequence=['#1f77b4', '#ff7f0e'])
-            fig_pie.update_traces(textinfo='percent+label', hovertemplate='<b>%{label}</b><br>Omzet: %{value:,.0f}<br>Persentase: %{percent}')
-            st.plotly_chart(fig_pie, use_container_width=True)
-        else:
-            st.info("Tidak ada data omzet untuk ditampilkan.")
-            
-    with col2:
-        st.subheader("Performa Omzet Mingguan")
-        weekly_omzet_all = df_filtered.groupby(['Minggu', TOKO_COL])[OMZET_COL].sum().reset_index()
-        fig_line = px.line(weekly_omzet_all, x='Minggu', y=OMZET_COL, color=TOKO_COL, markers=True, title="Tren Omzet Mingguan: Anda vs Kompetitor")
-        st.plotly_chart(fig_line, use_container_width=True)
+    # Tabel Pertumbuhan Omzet Mingguan
+    st.subheader("Tabel Pertumbuhan Omzet Mingguan per Toko")
+    weekly_omzet_pivot = df_filtered.groupby(['Minggu', TOKO_COL])[OMZET_COL].sum().unstack()
+    weekly_omzet_pivot.index = weekly_omzet_pivot.index.strftime('%Y-%m-%d')
+    st.dataframe(weekly_omzet_pivot.style.format(format_harga), use_container_width=True)
+
 
 elif page == "Analisis Mendalam":
     st.header("🔍 Analisis Mendalam")
@@ -375,7 +377,7 @@ elif page == "Analisis Mendalam":
         st.header(f"Analisis Kinerja Toko: {main_store}")
         st.subheader("1. Kategori Produk Terlaris")
         
-        if main_store.strip() == "DB_KLIK":
+        if main_store.strip() == "DB KLIK":
             main_store_df_cat = map_categories(main_store_df.copy(), db_kategori)
             category_sales = main_store_df_cat.groupby(KATEGORI_COL)[TERJUAL_COL].sum().reset_index()
             if not category_sales.empty:
@@ -401,7 +403,7 @@ elif page == "Analisis Mendalam":
                         hide_index=True
                     )
         else:
-            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB_KLIK'.")
+            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB KLIK'.")
 
         st.subheader("2. Produk Terlaris")
         top_products = main_store_df.sort_values(TERJUAL_COL, ascending=False).head(15)[[NAMA_PRODUK_COL, TERJUAL_COL, OMZET_COL]]
