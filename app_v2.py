@@ -1,7 +1,7 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.9
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.1
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Perbaikan HttpError 403 dengan menambahkan logika ekspor Google Sheets
+#  Update: Menghapus logika deteksi duplikat sesuai permintaan
 # ===================================================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.9")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.1")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -81,7 +81,7 @@ def load_intelligence_data(_gsheets_service, spreadsheet_id):
 @st.cache_data(show_spinner="Membaca semua data dari folder kompetitor...", ttl=300)
 def get_all_competitor_data(_drive_service, parent_folder_id):
     """
-    (V3.9 Logic) Membaca file CSV asli dan Google Sheets.
+    (V4.1 Logic) Membaca, menstandarkan, membersihkan data (tanpa menghapus duplikat).
     """
     all_data = []
     query = f"'{parent_folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder'"
@@ -97,9 +97,8 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         progress_text = f"Membaca folder toko: {folder['name']}..."
         progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
         
-        # --- PERBAIKAN V3.9: Cari file CSV dan Google Sheet ---
         file_query = f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet')"
-        file_results = _drive_service.files().list(q=file_query, fields="files(id, name, mimeType)").execute()
+        file_results = _drive_service.files().list(q=query, fields="files(id, name, mimeType)").execute()
         files_in_folder = file_results.get('files', [])
 
         for file_item in files_in_folder:
@@ -108,10 +107,9 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
             mime_type = file_item.get('mimeType')
             
             try:
-                # --- PERBAIKAN V3.9: Logika untuk download vs export ---
                 if mime_type == 'application/vnd.google-apps.spreadsheet':
                     request = _drive_service.files().export_media(fileId=file_id, mimeType='text/csv')
-                else: # Ini untuk file text/csv asli
+                else:
                     request = _drive_service.files().get_media(fileId=file_id)
 
                 downloader = io.BytesIO(request.execute())
@@ -154,6 +152,9 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
     
     final_df = pd.concat(all_data, ignore_index=True)
     
+    # --- PERUBAHAN V4.1: Logika deteksi duplikat dihapus ---
+    # Tidak ada lagi final_df.drop_duplicates()
+
     if HARGA_COL in final_df.columns:
         final_df[HARGA_COL] = pd.to_numeric(final_df[HARGA_COL], errors='coerce').fillna(0)
     else:
@@ -241,7 +242,7 @@ def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.9")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.1")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -284,7 +285,7 @@ st.sidebar.divider()
 st.sidebar.header("Filter Global")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
 try:
-    default_store_index = all_stores.index("DB_KLIK")
+    default_store_index = all_stores.index("DB KLIK")
 except ValueError:
     default_store_index = 0
 main_store = st.sidebar.selectbox("Pilih Toko Utama Anda:", all_stores, index=default_store_index)
@@ -361,7 +362,7 @@ elif page == "Analisis Mendalam":
         st.header(f"Analisis Kinerja Toko: {main_store}")
         st.subheader("1. Kategori Produk Terlaris")
         
-        if main_store.strip() == "DB_KLIK":
+        if main_store.strip() == "DB KLIK":
             main_store_df_cat = map_categories(main_store_df.copy(), db_kategori)
             category_sales = main_store_df_cat.groupby(KATEGORI_COL)[TERJUAL_COL].sum().reset_index()
             if not category_sales.empty:
@@ -379,7 +380,7 @@ elif page == "Analisis Mendalam":
                     detail_cat_df = main_store_df_cat[main_store_df_cat[KATEGORI_COL] == selected_cat_details]
                     st.dataframe(detail_cat_df[[NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL, STATUS_COL]].style.format({HARGA_COL: format_harga}), use_container_width=True, hide_index=True)
         else:
-            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB_KLIK'.")
+            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB KLIK'.")
 
         st.subheader("2. Produk Terlaris")
         top_products = main_store_df.sort_values(TERJUAL_COL, ascending=False).head(15)[[NAMA_PRODUK_COL, TERJUAL_COL, OMZET_COL]]
@@ -512,7 +513,7 @@ elif page == "Analisis Mendalam":
         if summary_list:
             final_summary = pd.concat(summary_list, ignore_index=True)
             final_summary['Rata-Rata Terjual Harian'] = (final_summary['Total_Terjual'] / 7).round().astype(int)
-            display_cols = {'Minggu': 'Mulai Minggu', 'Toko': 'Toko', 'Total_Omzet': 'Total Omzet', 'Pertumbuhan Omzet (WoW)': 'Pertumbuhan Omzet (WoW)', 'Total_Terjual': 'Total Terjual', 'Rata-Rata Terjual Harian': 'Rata-Rata Terjual Harian', 'Rata_Rata_Harga': 'Rata-Rata Harga'}
+            display_cols = {'Minggu': 'Mulai Minggu', 'Toko': 'Toko', 'Total_Omzet': 'Total Omzet', 'Pertumbuhan Omzet (WoW)': 'Pertumbuhan Omzet (WoW)', 'Total_Terjual': 'Total Terjual', 'Rata-Rata Terjual Harian': 'Rata-Rata Terjual Harian', 'Rata-Rata_Harga': 'Rata-Rata Harga'}
             final_summary_display = final_summary.rename(columns=display_cols)
             
             st.dataframe(
@@ -654,4 +655,3 @@ elif page == "Ruang Kontrol Brand":
                     st.cache_data.clear()
                     st.cache_resource.clear()
                     st.rerun()
-
