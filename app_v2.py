@@ -1,7 +1,7 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.9
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.2
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Perbaikan HttpError 403 dengan menambahkan logika ekspor Google Sheets
+#  Update: Penambahan tombol export data ke format JSON
 # ===================================================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.9")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.2")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -81,7 +81,7 @@ def load_intelligence_data(_gsheets_service, spreadsheet_id):
 @st.cache_data(show_spinner="Membaca semua data dari folder kompetitor...", ttl=300)
 def get_all_competitor_data(_drive_service, parent_folder_id):
     """
-    (V3.9 Logic) Membaca file CSV asli dan Google Sheets.
+    (V4.1 Logic) Membaca, menstandarkan, membersihkan data (tanpa menghapus duplikat).
     """
     all_data = []
     query = f"'{parent_folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder'"
@@ -97,7 +97,6 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         progress_text = f"Membaca folder toko: {folder['name']}..."
         progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
         
-        # --- PERBAIKAN V3.9: Cari file CSV dan Google Sheet ---
         file_query = f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet')"
         file_results = _drive_service.files().list(q=file_query, fields="files(id, name, mimeType)").execute()
         files_in_folder = file_results.get('files', [])
@@ -108,12 +107,259 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
             mime_type = file_item.get('mimeType')
             
             try:
-                # --- PERBAIKAN V3.9: Logika untuk download vs export ---
                 if mime_type == 'application/vnd.google-apps.spreadsheet':
                     request = _drive_service.files().export_media(fileId=file_id, mimeType='text/csv')
-                else: # Ini untuk file text/csv asli
+                else:
                     request = _drive_service.files().get_media(fileId=file_id)
 
+                downloader = io.BytesIO(request.execute())
+                
+                if downloader.getbuffer().nbytes == 0:
+                    st.error(f"FILE KOSONG: File '{file_name}' di folder '{folder['name']}' kosong. Proses dihentikan.")
+                    st.stop()
+
+                df = pd.read_csv(downloader)
+                
+                rename_map = {
+                    'Nama Produk': NAMA_PRODUK_COL,
+                    'Harga': HARGA_COL,
+                    'Terjual per Bulan': TERJUAL_COL,
+                    'Link': 'Link'
+                }
+                df.rename(columns=lambda c: rename_map.get(c.strip(), c.strip()), inplace=True)
+                
+                if NAMA_PRODUK_COL not in df.columns:
+                    st.error(f"KOLOM HILANG: File '{file_name}' di folder '{folder['name']}' tidak punya kolom 'Nama Produk'.")
+                    st.stop()
+
+                df[TOKO_COL] = folder['name']
+                match_tanggal = re.search(r'(\d{4}-\d{2}-\d{2})', file_name)
+                df[TANGGAL_COL] = pd.to_datetime(match_tanggal.group(1)) if match_tanggal else pd.NaT
+                
+                if 'ready' in file_name.lower(): df[STATUS_COL] = 'Tersedia'
+                elif 'habis' in file_name.lower(): df[STATUS_COL] = 'Habis'
+                else: df[STATUS_COL] = 'N/A'
+                    
+                all_data.append(df)
+            except Exception as file_error:
+                st.error(f"GAGAL BACA FILE: Error saat memproses '{file_name}' di folder '{folder['name']}'.")
+                st.error(f"Detail Error: {file_error}")
+                st.info("Proses dihentikan. Perbaiki file sebelum mencoba lagi.")
+                st.stop()
+    
+    progress_bar.empty()
+    if not all_data: return pd.DataFrame()
+    
+    final_df = pd.concat(all_data, ignore_index=True)
+
+    if HARGA_COL in final_df.columns:
+        final_df[HARGA_COL] = pd.to_numeric(final_df[HARGA_COL], errors='coerce').fillna(0)
+    else:
+        final_df[HARGA_COL] = 0
+
+    if TERJUAL_COL in final_df.columns:
+        cleaned_series = final_df[TERJUAL_COL].astype(str).str.lower().str.replace('rb', '000', regex=False)
+        cleaned_series = cleaned_series.str.replace(r'[^\d]', '', regex=True)
+        final_df[TERJUAL_COL] = pd.to_numeric(cleaned_series, errors='coerce').fillna(0)
+    else:
+        final_df[TERJUAL_COL] = 0
+    
+    final_df[HARGA_COL] = final_df[HARGA_COL].astype(float)
+    final_df[TERJUAL_COL] = final_df[TERJUAL_COL].astype(float)
+    
+    final_df[OMZET_COL] = final_df[HARGA_COL] * final_df[TERJUAL_COL]
+    
+    return final_df
+
+def label_brands(df, brand_db, kamus_brand, fuzzy_threshold=88):
+    if NAMA_PRODUK_COL not in df.columns: st.stop()
+    brand_db_sorted = sorted(brand_db, key=len, reverse=True)
+    brands = []
+    for product_name in df[NAMA_PRODUK_COL].astype(str).str.upper():
+        found_brand = None
+        for alias, brand_utama in kamus_brand.items():
+            if re.search(r'\b' + re.escape(str(alias).upper()) + r'\b', product_name):
+                found_brand = brand_utama; break
+        if found_brand: brands.append(found_brand); continue
+        for brand in brand_db_sorted:
+            if re.search(r'\b' + re.escape(brand.upper()) + r'\b', product_name) or (brand.upper() in product_name.replace(" ", "")):
+                found_brand = brand; break
+        if found_brand: brands.append(found_brand); continue
+        best_match = process.extractOne(product_name, brand_db, scorer=fuzz.token_set_ratio)
+        if best_match and best_match[1] > fuzzy_threshold: found_brand = best_match[0]
+        brands.append(found_brand if found_brand else "TIDAK DIKETAHUI")
+    df[BRAND_COL] = brands
+    return df
+
+@st.cache_data
+def map_categories(_df, _db_kategori, fuzzy_threshold=95):
+    _df[KATEGORI_COL] = 'Lainnya'
+    if _db_kategori.empty or 'NAMA' not in _db_kategori.columns or 'KATEGORI' not in _db_kategori.columns:
+        return _df
+    
+    db_unique = _db_kategori.drop_duplicates(subset=['NAMA'])
+    db_map = db_unique.set_index('NAMA')['KATEGORI']
+    
+    for index, row in _df.iterrows():
+        if pd.notna(row[NAMA_PRODUK_COL]):
+            match, score = process.extractOne(row[NAMA_PRODUK_COL], db_map.index, scorer=fuzz.token_set_ratio)
+            if score >= fuzzy_threshold:
+                _df.loc[index, KATEGORI_COL] = db_map[match]
+    return _df
+
+def update_google_sheet(gsheets_service, spreadsheet_id, sheet_name, values):
+    try:
+        sheet = gsheets_service.open_by_key(spreadsheet_id).worksheet(sheet_name)
+        sheet.append_row(values, value_input_option='USER_ENTERED')
+        return True
+    except Exception as e:
+        st.error(f"Gagal mengupdate Google Sheet: {e}")
+        return False
+
+def format_wow_growth(pct_change):
+    if pd.isna(pct_change) or pct_change == float('inf'): return "N/A"
+    elif pct_change > 0.001: return f"▲ {pct_change:.1%}"
+    elif pct_change < -0.001: return f"▼ {pct_change:.1%}"
+    else: return f"▬ 0.0%"
+
+def format_harga(x):
+    if pd.isnull(x): return "N/A"
+    try: return f"Rp {float(x):,.0f}"
+    except (ValueError, TypeError): return str(x)
+
+def colorize_growth(val):
+    color = 'grey' # Warna default untuk N/A atau 0
+    if isinstance(val, str):
+        if '▲' in val: color = '#28aTentu, Firman. Saya mengerti sekali apa yang Anda maksud.
+
+Anda merasa form "Ruang Kontrol" yang menggunakan `st.data_editor` (mode massal) saat ini membingungkan dan ingin kembali ke alur kerja yang lebih jelas dan terpandu, satu per satu, seperti yang pernah kita buat di `app_v2.py`. Anda benar, form tersebut memang lebih intuitif untuk kasus ini.
+
+Saya ingat betul form yang Anda maksud. Mari kita kembalikan alur kerja tersebut dengan penjelasan yang lebih baik mengenai "Alias".
+
+**Solusi yang Akan Saya Terapkan:**
+
+1.  **Hapus Mode Massal:** Saya akan mengganti `st.data_editor` yang ada sekarang.
+2.  **Implementasi Ulang Form Terpandu:** Saya akan membuat ulang form yang fokus pada **satu produk tak dikenal** dalam satu waktu.
+3.  **Alur yang Jelas:**
+    * **Tampilkan Produk:** Aplikasi akan menunjukkan nama produk yang perlu direview.
+    * **Pilih atau Tambah Brand:** Anda bisa memilih brand dari dropdown. Jika tidak ada, Anda bisa mengetik nama brand baru di kolom terpisah.
+    * **Penjelasan Alias:** Saya akan memberikan penjelasan yang lebih gamblang tentang cara mengisi alias. Contoh: Jika nama produknya adalah `VGA MSI RTX 4090`, maka brand utamanya adalah `MSI`. Jika di lain waktu ada produk bernama `VGA M.S.I RTX 4090`, Anda bisa mengajarkan sistem bahwa `M.S.I` adalah alias dari `MSI`.
+
+Ini akan membuat proses "melatih" sistem menjadi jauh lebih mudah dipahami dan tidak ambigu.
+
+Berikut adalah kode lengkap **`app_v3.6`** dengan perubahan pada "Ruang Kontrol Brand" sesuai permintaan Anda.
+
+
+```python
+# ===================================================================================
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.6
+#  Dibuat oleh: Firman & Asisten AI Gemini
+#  Update: Mengembalikan form Ruang Kontrol Brand ke mode terpandu (single-review)
+# ===================================================================================
+
+import streamlit as st
+import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+import io
+from thefuzz import process, fuzz
+import re
+import plotly.express as px
+import time
+
+# --- KONFIGURASI HALAMAN ---
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.6")
+
+# --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
+PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
+SPREADSHEET_ID = "1iX-LpYJrHRqD5-c2-D27kVY7PArYLaSCCd-nvd2y6Yg" # ID Google Sheet "Otak"
+DB_SHEET_NAME = "database_brand"
+KAMUS_SHEET_NAME = "kamus_brand"
+KATEGORI_SHEET_NAME = "DATABASE"
+
+# Nama Kolom Konsisten
+NAMA_PRODUK_COL = "Nama Produk"
+HARGA_COL = "Harga"
+TERJUAL_COL = "Terjual per bulan"
+STATUS_COL = "Status"
+TOKO_COL = "Toko"
+BRAND_COL = "BRAND"
+TANGGAL_COL = "Tanggal"
+OMZET_COL = "Omzet"
+KATEGORI_COL = "Kategori"
+
+# --- FUNGSI-FUNGSI INTI ---
+
+@st.cache_resource(show_spinner="Menghubungkan ke Google API...")
+def get_google_apis():
+    """Melakukan autentikasi sekali dan mengembalikan service object untuk Drive dan Sheets."""
+    try:
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=["[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)", "[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)"],
+        )
+        drive_service = build('drive', 'v3', credentials=creds)
+        gsheets_service = gspread.authorize(creds)
+        return drive_service, gsheets_service
+    except Exception as e:
+        st.error(f"Gagal melakukan autentikasi ke Google. Pastikan `secrets.toml` sudah benar. Error: {e}")
+        st.stop()
+
+@st.cache_data(show_spinner="Memuat 'otak' dari database...", ttl=300)
+def load_intelligence_data(_gsheets_service, spreadsheet_id):
+    """Memuat semua data pendukung: database brand, kamus alias, dan database kategori."""
+    try:
+        spreadsheet = _gsheets_service.open_by_key(spreadsheet_id)
+        
+        db_sheet = spreadsheet.worksheet(DB_SHEET_NAME)
+        brand_db_list = [item for item in db_sheet.col_values(1) if item]
+        
+        kamus_sheet = spreadsheet.worksheet(KAMUS_SHEET_NAME)
+        kamus_df = pd.DataFrame(kamus_sheet.get_all_records())
+        kamus_dict = pd.Series(kamus_df.Brand_Utama.values, index=kamus_df.Alias).to_dict()
+
+        kategori_sheet = spreadsheet.worksheet(KATEGORI_SHEET_NAME)
+        db_kategori_df = pd.DataFrame(kategori_sheet.get_all_records())
+        db_kategori_df.columns = [str(col).strip().upper() for col in db_kategori_df.columns]
+
+        return brand_db_list, kamus_dict, db_kategori_df
+    except gspread.exceptions.WorksheetNotFound as e:
+        st.error(f"GAGAL: Sheet '{e.args[0]}' tidak ditemukan di Google Sheet 'Otak'. Harap periksa nama sheet.")
+        st.stop()
+    except Exception as e:
+        st.error(f"Gagal memuat data dari Google Sheet 'Otak'. Error: {e}")
+        st.stop()
+
+@st.cache_data(show_spinner="Membaca semua data dari folder kompetitor...", ttl=300)
+def get_all_competitor_data(_drive_service, parent_folder_id):
+    """
+    (V3.4 Logic) Membaca, menstandarkan, dan membersihkan data dari semua file CSV.
+    """
+    all_data = []
+    query = f"'{parent_folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder'"
+    results = _drive_service.files().list(q=query, fields="files(id, name)").execute()
+    subfolders = results.get('files', [])
+
+    if not subfolders:
+        st.warning("Tidak ada subfolder (toko) yang ditemukan di dalam folder induk.")
+        return pd.DataFrame()
+
+    progress_bar = st.progress(0, text="Membaca data...")
+    for i, folder in enumerate(subfolders):
+        progress_text = f"Membaca folder toko: {folder['name']}..."
+        progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
+        
+        file_query = f"'{folder['id']}' in parents and mimeType='text/csv'"
+        file_results = _drive_service.files().list(q=file_query, fields="files(id, name)").execute()
+        csv_files = file_results.get('files', [])
+
+        for csv_file in csv_files:
+            file_id = csv_file.get('id')
+            file_name = csv_file.get('name')
+            
+            try:
+                request = _drive_service.files().get_media(fileId=file_id)
                 downloader = io.BytesIO(request.execute())
                 
                 if downloader.getbuffer().nbytes == 0:
@@ -230,18 +476,27 @@ def format_harga(x):
     except (ValueError, TypeError): return str(x)
 
 def colorize_growth(val):
-    color = 'FFD65A' # Warna default untuk N/A atau 0
+    color = 'grey' # Warna default untuk N/A atau 0
     if isinstance(val, str):
-        if '▲' in val: color = '#16C47F' # Hijau
-        elif '▼' in val: color = '#F93827' # Merah
+        if '▲' in val: color = '#28a745' # Hijau
+        elif '▼' in val: color = '#dc3545' # Merah
     return f'color: {color}'
 
 @st.cache_data
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
+# --- FUNGSI BARU v4.2 ---
+@st.cache_data
+def convert_df_to_json(df):
+    # Mengubah kolom tanggal menjadi string agar kompatibel dengan JSON
+    df_copy = df.copy()
+    for col in df_copy.select_dtypes(include=['datetime64[ns]']).columns:
+        df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d')
+    return df_copy.to_json(orient='records', indent=4).encode('utf-8')
+
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.9")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.2")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -284,7 +539,7 @@ st.sidebar.divider()
 st.sidebar.header("Filter Global")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
 try:
-    default_store_index = all_stores.index("DB_KLIK")
+    default_store_index = all_stores.index("DB KLIK")
 except ValueError:
     default_store_index = 0
 main_store = st.sidebar.selectbox("Pilih Toko Utama Anda:", all_stores, index=default_store_index)
@@ -296,11 +551,26 @@ selected_date_range = st.sidebar.date_input("Rentang Tanggal:", [min_date, max_d
 accuracy_cutoff = st.sidebar.slider("Tingkat Akurasi Pencocokan (%)", 80, 100, 91, 1, key="global_accuracy", help="Digunakan untuk membandingkan produk antar toko.")
 
 st.sidebar.divider()
+st.sidebar.header("Download Data")
+
+# Tombol Download CSV
 csv_to_download = convert_df_to_csv(master_df)
 st.sidebar.download_button(
-   label="📥 Download Data Olahan (CSV)", data=csv_to_download,
-   file_name=f'data_olahan.csv', mime='text/csv',
+   label="📥 Download Data Olahan (CSV)",
+   data=csv_to_download,
+   file_name='data_olahan.csv',
+   mime='text/csv',
 )
+
+# Tombol Download JSON
+json_to_download = convert_df_to_json(master_df)
+st.sidebar.download_button(
+   label="📥 Download Data Olahan (JSON)",
+   data=json_to_download,
+   file_name='data_olahan.json',
+   mime='application/json',
+)
+
 
 if len(selected_date_range) != 2: st.stop()
 start_date, end_date = selected_date_range
@@ -361,7 +631,7 @@ elif page == "Analisis Mendalam":
         st.header(f"Analisis Kinerja Toko: {main_store}")
         st.subheader("1. Kategori Produk Terlaris")
         
-        if main_store.strip() == "DB_KLIK":
+        if main_store.strip() == "DB KLIK":
             main_store_df_cat = map_categories(main_store_df.copy(), db_kategori)
             category_sales = main_store_df_cat.groupby(KATEGORI_COL)[TERJUAL_COL].sum().reset_index()
             if not category_sales.empty:
@@ -379,7 +649,7 @@ elif page == "Analisis Mendalam":
                     detail_cat_df = main_store_df_cat[main_store_df_cat[KATEGORI_COL] == selected_cat_details]
                     st.dataframe(detail_cat_df[[NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL, STATUS_COL]].style.format({HARGA_COL: format_harga}), use_container_width=True, hide_index=True)
         else:
-            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB_KLIK'.")
+            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB KLIK'.")
 
         st.subheader("2. Produk Terlaris")
         top_products = main_store_df.sort_values(TERJUAL_COL, ascending=False).head(15)[[NAMA_PRODUK_COL, TERJUAL_COL, OMZET_COL]]
@@ -512,7 +782,7 @@ elif page == "Analisis Mendalam":
         if summary_list:
             final_summary = pd.concat(summary_list, ignore_index=True)
             final_summary['Rata-Rata Terjual Harian'] = (final_summary['Total_Terjual'] / 7).round().astype(int)
-            display_cols = {'Minggu': 'Mulai Minggu', 'Toko': 'Toko', 'Total_Omzet': 'Total Omzet', 'Pertumbuhan Omzet (WoW)': 'Pertumbuhan Omzet (WoW)', 'Total_Terjual': 'Total Terjual', 'Rata-Rata Terjual Harian': 'Rata-Rata Terjual Harian', 'Rata_Rata_Harga': 'Rata-Rata Harga'}
+            display_cols = {'Minggu': 'Mulai Minggu', 'Toko': 'Toko', 'Total_Omzet': 'Total Omzet', 'Pertumbuhan Omzet (WoW)': 'Pertumbuhan Omzet (WoW)', 'Total_Terjual': 'Total Terjual', 'Rata-Rata Terjual Harian': 'Rata-Rata Terjual Harian', 'Rata-Rata Harga': 'Rata-Rata Harga'}
             final_summary_display = final_summary.rename(columns=display_cols)
             
             st.dataframe(
@@ -654,4 +924,3 @@ elif page == "Ruang Kontrol Brand":
                     st.cache_data.clear()
                     st.cache_resource.clear()
                     st.rerun()
-
