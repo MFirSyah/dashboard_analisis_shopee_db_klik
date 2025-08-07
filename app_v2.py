@@ -332,23 +332,26 @@ if page == "Ringkasan Eksekutif":
     st.markdown(f"Menampilkan data terbaru per tanggal **{latest_date_in_data.strftime('%d %b %Y')}**")
     
     df_latest = df_filtered[df_filtered[TANGGAL_COL] == latest_date_in_data]
+    
+    # --- PERBAIKAN V5.0: Buat dataframe spesifik untuk toko utama pada tanggal terbaru ---
+    df_latest_main_store = df_latest[df_latest[TOKO_COL] == main_store]
 
-    omzet_today_main = df_latest[df_latest[TOKO_COL] == main_store][OMZET_COL].sum()
-    units_today_main = df_latest[df_latest[TOKO_COL] == main_store][TERJUAL_COL].sum()
+    # Metrik 1: Omzet Toko Anda pada tanggal terbaru
+    omzet_today_main = df_latest_main_store[OMZET_COL].sum()
+    units_today_main = df_latest_main_store[TERJUAL_COL].sum()
     
-    # --- PERBAIKAN V5.0: Metrik 2 ---
-    # Hitung jumlah produk (baris) HANYA dari tanggal terbaru
-    total_ready_latest = len(df_latest[df_latest[STATUS_COL] == 'Tersedia'])
-    total_habis_latest = len(df_latest[df_latest[STATUS_COL] == 'Habis'])
-    total_produk_latest = total_ready_latest + total_habis_latest
+    # Metrik 2: Jumlah produk (baris) HANYA dari toko terpilih pada tanggal terbaru
+    total_ready_latest_main = len(df_latest_main_store[df_latest_main_store[STATUS_COL] == 'Tersedia'])
+    total_habis_latest_main = len(df_latest_main_store[df_latest_main_store[STATUS_COL] == 'Habis'])
+    total_produk_latest_main = total_ready_latest_main + total_habis_latest_main
     
-    # Metrik 3: Hitung jumlah unit terjual HANYA dari produk READY pada tanggal terbaru
-    units_sold_latest_ready = df_latest[df_latest[STATUS_COL] == 'Tersedia'][TERJUAL_COL].sum()
+    # Metrik 3: Jumlah unit terjual HANYA dari produk READY pada tanggal terbaru dari toko terpilih
+    units_sold_latest_ready_main = df_latest_main_store[df_latest_main_store[STATUS_COL] == 'Tersedia'][TERJUAL_COL].sum()
     
     col1, col2, col3 = st.columns(3)
     col1.metric(f"Omzet {main_store} (Hari Ini)", format_harga(omzet_today_main), f"{int(units_today_main)} unit terjual")
-    col2.metric("Jumlah Produk (Hari Ini)", f"{total_produk_latest:,} Produk", f"Tersedia: {total_ready_latest:,} | Habis: {total_habis_latest:,}")
-    col3.metric("Unit Terjual (Ready, Hari Ini)", f"{int(units_sold_latest_ready):,} Unit")
+    col2.metric(f"Jumlah Produk {main_store} (Hari Ini)", f"{total_produk_latest_main:,} Produk", f"Tersedia: {total_ready_latest_main:,} | Habis: {total_habis_latest_main:,}")
+    col3.metric(f"Unit Terjual {main_store} (Ready, Hari Ini)", f"{int(units_sold_latest_ready_main):,} Unit")
     
     st.divider()
 
