@@ -1,7 +1,7 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.7
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.8
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Perbaikan AttributeError pada format tanggal di tabel Ringkasan Eksekutif
+#  Update: Mengubah tabel di Ringkasan Eksekutif menjadi pertumbuhan persen (WoW)
 # ===================================================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.7")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.8")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -246,7 +246,7 @@ def convert_df_to_json(df):
     return df_copy.to_json(orient='records', indent=4).encode('utf-8')
 
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.7")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.8")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -356,11 +356,18 @@ if page == "Ringkasan Eksekutif":
     
     st.divider()
     
-    st.subheader("Tabel Pertumbuhan Omzet Mingguan per Toko")
+    st.subheader("Tabel Pertumbuhan Omzet Mingguan per Toko (%)")
     weekly_omzet_pivot = df_filtered.groupby(['Minggu', TOKO_COL])[OMZET_COL].sum().unstack()
-    # --- PERBAIKAN V4.7: Mengubah index ke datetime sebelum formatting ---
-    weekly_omzet_pivot.index = pd.to_datetime(weekly_omzet_pivot.index).strftime('%Y-%m-%d')
-    st.dataframe(weekly_omzet_pivot.style.format(format_harga), use_container_width=True)
+    
+    # --- PERBAIKAN V4.8: Menghitung persentase pertumbuhan ---
+    weekly_growth_pivot = weekly_omzet_pivot.pct_change()
+    
+    weekly_growth_pivot.index = pd.to_datetime(weekly_growth_pivot.index).strftime('%Y-%m-%d')
+    
+    st.dataframe(
+        weekly_growth_pivot.style.format(format_wow_growth).applymap(colorize_growth),
+        use_container_width=True
+    )
 
 
 elif page == "Analisis Mendalam":
