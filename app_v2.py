@@ -1,7 +1,7 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.7
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.9
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Perbaikan ValueError pada styling tabel kinerja mingguan (WoW)
+#  Update: Perbaikan HttpError 403 dengan menambahkan logika ekspor Google Sheets
 # ===================================================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.7")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.9")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -81,7 +81,7 @@ def load_intelligence_data(_gsheets_service, spreadsheet_id):
 @st.cache_data(show_spinner="Membaca semua data dari folder kompetitor...", ttl=300)
 def get_all_competitor_data(_drive_service, parent_folder_id):
     """
-    (V3.4 Logic) Membaca, menstandarkan, dan membersihkan data dari semua file CSV.
+    (V3.9 Logic) Membaca file CSV asli dan Google Sheets.
     """
     all_data = []
     query = f"'{parent_folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder'"
@@ -97,16 +97,23 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         progress_text = f"Membaca folder toko: {folder['name']}..."
         progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
         
-        file_query = f"'{folder['id']}' in parents and mimeType='text/csv'"
-        file_results = _drive_service.files().list(q=query, fields="files(id, name)").execute()
-        csv_files = file_results.get('files', [])
+        # --- PERBAIKAN V3.9: Cari file CSV dan Google Sheet ---
+        file_query = f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet')"
+        file_results = _drive_service.files().list(q=file_query, fields="files(id, name, mimeType)").execute()
+        files_in_folder = file_results.get('files', [])
 
-        for csv_file in csv_files:
-            file_id = csv_file.get('id')
-            file_name = csv_file.get('name')
+        for file_item in files_in_folder:
+            file_id = file_item.get('id')
+            file_name = file_item.get('name')
+            mime_type = file_item.get('mimeType')
             
             try:
-                request = _drive_service.files().get_media(fileId=file_id)
+                # --- PERBAIKAN V3.9: Logika untuk download vs export ---
+                if mime_type == 'application/vnd.google-apps.spreadsheet':
+                    request = _drive_service.files().export_media(fileId=file_id, mimeType='text/csv')
+                else: # Ini untuk file text/csv asli
+                    request = _drive_service.files().get_media(fileId=file_id)
+
                 downloader = io.BytesIO(request.execute())
                 
                 if downloader.getbuffer().nbytes == 0:
@@ -234,7 +241,7 @@ def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.7")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.9")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -277,7 +284,7 @@ st.sidebar.divider()
 st.sidebar.header("Filter Global")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
 try:
-    default_store_index = all_stores.index("DB_KLIK")
+    default_store_index = all_stores.index("DB KLIK")
 except ValueError:
     default_store_index = 0
 main_store = st.sidebar.selectbox("Pilih Toko Utama Anda:", all_stores, index=default_store_index)
@@ -291,8 +298,8 @@ accuracy_cutoff = st.sidebar.slider("Tingkat Akurasi Pencocokan (%)", 80, 100, 9
 st.sidebar.divider()
 csv_to_download = convert_df_to_csv(master_df)
 st.sidebar.download_button(
-label="📥 Download Data Olahan (CSV)", data=csv_to_download,
-file_name=f'data_olahan.csv', mime='text/csv',
+   label="📥 Download Data Olahan (CSV)", data=csv_to_download,
+   file_name=f'data_olahan.csv', mime='text/csv',
 )
 
 if len(selected_date_range) != 2: st.stop()
@@ -353,7 +360,8 @@ elif page == "Analisis Mendalam":
     with tab1:
         st.header(f"Analisis Kinerja Toko: {main_store}")
         st.subheader("1. Kategori Produk Terlaris")
-        if main_store == "DB_KLIK":
+        
+        if main_store.strip() == "DB KLIK":
             main_store_df_cat = map_categories(main_store_df.copy(), db_kategori)
             category_sales = main_store_df_cat.groupby(KATEGORI_COL)[TERJUAL_COL].sum().reset_index()
             if not category_sales.empty:
@@ -371,7 +379,7 @@ elif page == "Analisis Mendalam":
                     detail_cat_df = main_store_df_cat[main_store_df_cat[KATEGORI_COL] == selected_cat_details]
                     st.dataframe(detail_cat_df[[NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL, STATUS_COL]].style.format({HARGA_COL: format_harga}), use_container_width=True, hide_index=True)
         else:
-            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB_KLIK'.")
+            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB KLIK'.")
 
         st.subheader("2. Produk Terlaris")
         top_products = main_store_df.sort_values(TERJUAL_COL, ascending=False).head(15)[[NAMA_PRODUK_COL, TERJUAL_COL, OMZET_COL]]
@@ -401,7 +409,6 @@ elif page == "Analisis Mendalam":
         weekly_summary_display['Omzet'] = weekly_summary_display['Omzet'].apply(format_harga)
         weekly_summary_display['Pertumbuhan Omzet (WoW)'] = weekly_summary_display['Pertumbuhan Omzet (WoW)'].apply(format_wow_growth)
         
-        # --- PERBAIKAN V3.7: Menggunakan .applymap dengan subset ---
         st.dataframe(
             weekly_summary_display[['Minggu', 'Omzet', 'Penjualan_Unit', 'Pertumbuhan Omzet (WoW)']].style.applymap(
                 colorize_growth,
@@ -508,7 +515,6 @@ elif page == "Analisis Mendalam":
             display_cols = {'Minggu': 'Mulai Minggu', 'Toko': 'Toko', 'Total_Omzet': 'Total Omzet', 'Pertumbuhan Omzet (WoW)': 'Pertumbuhan Omzet (WoW)', 'Total_Terjual': 'Total Terjual', 'Rata-Rata Terjual Harian': 'Rata-Rata Terjual Harian', 'Rata_Rata_Harga': 'Rata-Rata Harga'}
             final_summary_display = final_summary.rename(columns=display_cols)
             
-            # --- PERBAIKAN V3.7: Menggunakan .applymap dengan subset ---
             st.dataframe(
                 final_summary_display.style.format({
                     'Total Omzet': format_harga,
@@ -635,8 +641,8 @@ elif page == "Ruang Kontrol Brand":
                     
                     if alias_input:
                         if update_google_sheet(gsheets_service, SPREADSHEET_ID, KAMUS_SHEET_NAME, [alias_input.strip().upper(), final_brand]):
-                            st.success(f"Pelajaran baru disimpan: Alias '{alias_input.upper()}' sekarang akan dikenali sebagai '{final_brand}'.")
-                            correction_made = True
+                             st.success(f"Pelajaran baru disimpan: Alias '{alias_input.upper()}' sekarang akan dikenali sebagai '{final_brand}'.")
+                             correction_made = True
                     
                     if not correction_made and not new_brand_input:
                         st.warning("Tidak ada pelajaran baru yang ditambahkan. Jika hanya ingin mengklasifikasikan tanpa alias, pastikan brand dipilih.")
@@ -648,4 +654,3 @@ elif page == "Ruang Kontrol Brand":
                     st.cache_data.clear()
                     st.cache_resource.clear()
                     st.rerun()
-
