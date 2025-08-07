@@ -1,7 +1,7 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.2
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.3
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Fitur "Belajar Otomatis" di Ruang Kontrol Brand
+#  Update: Mengubah format angka penjualan menjadi bilangan bulat (integer)
 # ===================================================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.2")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.3")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -165,7 +165,8 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         final_df[TERJUAL_COL] = 0
     
     final_df[HARGA_COL] = final_df[HARGA_COL].astype(float)
-    final_df[TERJUAL_COL] = final_df[TERJUAL_COL].astype(float)
+    # --- PERBAIKAN V4.3: Mengubah tipe data menjadi integer ---
+    final_df[TERJUAL_COL] = final_df[TERJUAL_COL].astype(int)
     
     final_df[OMZET_COL] = final_df[HARGA_COL] * final_df[TERJUAL_COL]
     
@@ -246,7 +247,7 @@ def convert_df_to_json(df):
     return df_copy.to_json(orient='records', indent=4).encode('utf-8')
 
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.2")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.3")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -289,7 +290,7 @@ st.sidebar.divider()
 st.sidebar.header("Filter Global")
 all_stores = sorted(df_labeled[TOKO_COL].unique())
 try:
-    default_store_index = all_stores.index("DB KLIK")
+    default_store_index = all_stores.index("DB_KLIK")
 except ValueError:
     default_store_index = 0
 main_store = st.sidebar.selectbox("Pilih Toko Utama Anda:", all_stores, index=default_store_index)
@@ -374,7 +375,7 @@ elif page == "Analisis Mendalam":
         st.header(f"Analisis Kinerja Toko: {main_store}")
         st.subheader("1. Kategori Produk Terlaris")
         
-        if main_store.strip() == "DB KLIK":
+        if main_store.strip() == "DB_KLIK":
             main_store_df_cat = map_categories(main_store_df.copy(), db_kategori)
             category_sales = main_store_df_cat.groupby(KATEGORI_COL)[TERJUAL_COL].sum().reset_index()
             if not category_sales.empty:
@@ -392,7 +393,7 @@ elif page == "Analisis Mendalam":
                     detail_cat_df = main_store_df_cat[main_store_df_cat[KATEGORI_COL] == selected_cat_details]
                     st.dataframe(detail_cat_df[[NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL, STATUS_COL]].style.format({HARGA_COL: format_harga}), use_container_width=True, hide_index=True)
         else:
-            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB KLIK'.")
+            st.info("Analisis Kategori saat ini hanya diaktifkan untuk toko 'DB_KLIK'.")
 
         st.subheader("2. Produk Terlaris")
         top_products = main_store_df.sort_values(TERJUAL_COL, ascending=False).head(15)[[NAMA_PRODUK_COL, TERJUAL_COL, OMZET_COL]]
@@ -645,7 +646,6 @@ elif page == "Ruang Kontrol Brand":
                 if not final_brand:
                     st.error("Anda harus memilih brand yang sudah ada atau memasukkan brand baru.")
                 else:
-                    # Simpan ke Google Sheet untuk memori jangka panjang
                     if new_brand_input and final_brand not in st.session_state.brand_db:
                         if update_google_sheet(gsheets_service, SPREADSHEET_ID, DB_SHEET_NAME, [final_brand]):
                             st.success(f"Brand baru '{final_brand}' berhasil ditambahkan ke database.")
@@ -655,18 +655,14 @@ elif page == "Ruang Kontrol Brand":
                         if update_google_sheet(gsheets_service, SPREADSHEET_ID, KAMUS_SHEET_NAME, [alias_input.strip().upper(), final_brand]):
                              st.success(f"Alias '{alias_input.upper()}' untuk '{final_brand}' berhasil disimpan.")
                     
-                    # --- PERBAIKAN V4.2: Logika Belajar Otomatis ---
-                    # Update dataframe yang ada di memori (session_state) secara langsung
                     df_in_memory = st.session_state.master_df
                     product_name_to_update = product_to_review[NAMA_PRODUK_COL]
                     
-                    # Cari semua baris dengan nama produk yang sama dan update brand-nya
                     indices_to_update = df_in_memory[df_in_memory[NAMA_PRODUK_COL] == product_name_to_update].index
                     df_in_memory.loc[indices_to_update, BRAND_COL] = final_brand
                     
-                    # Simpan kembali dataframe yang sudah diperbarui ke session_state
                     st.session_state.master_df = df_in_memory
                     
                     st.toast("Sistem telah belajar! Menampilkan produk berikutnya...", icon="✅")
-                    time.sleep(1) # Jeda sesaat agar toast terlihat
+                    time.sleep(1)
                     st.rerun()
