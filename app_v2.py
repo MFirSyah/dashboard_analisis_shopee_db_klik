@@ -1,7 +1,7 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.4
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.5
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Perbaikan format angka & penambahan kolom omzet di tabel detail kategori
+#  Update: Perbaikan final pada logika pembacaan file Google Sheet
 # ===================================================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.4")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.5")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -81,7 +81,7 @@ def load_intelligence_data(_gsheets_service, spreadsheet_id):
 @st.cache_data(show_spinner="Membaca semua data dari folder kompetitor...", ttl=300)
 def get_all_competitor_data(_drive_service, parent_folder_id):
     """
-    (V4.1 Logic) Membaca, menstandarkan, membersihkan data (tanpa menghapus duplikat).
+    (V4.5 Logic) Membaca file CSV asli dan Google Sheets dengan benar.
     """
     all_data = []
     query = f"'{parent_folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder'"
@@ -98,7 +98,8 @@ def get_all_competitor_data(_drive_service, parent_folder_id):
         progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
         
         file_query = f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet')"
-        file_results = _drive_service.files().list(q=query, fields="files(id, name, mimeType)").execute()
+        # --- PERBAIKAN V4.5: Menggunakan variabel `file_query` yang benar ---
+        file_results = _drive_service.files().list(q=file_query, fields="files(id, name, mimeType)").execute()
         files_in_folder = file_results.get('files', [])
 
         for file_item in files_in_folder:
@@ -246,7 +247,7 @@ def convert_df_to_json(df):
     return df_copy.to_json(orient='records', indent=4).encode('utf-8')
 
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.4")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.5")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -390,7 +391,6 @@ elif page == "Analisis Mendalam":
                 selected_cat_details = st.selectbox("Pilih kategori untuk melihat produknya:", options=categories_in_chart)
                 if selected_cat_details:
                     detail_cat_df = main_store_df_cat[main_store_df_cat[KATEGORI_COL] == selected_cat_details]
-                    # --- PERBAIKAN V4.4: Menambahkan kolom Omzet dan format angka ---
                     st.dataframe(
                         detail_cat_df[[NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL, OMZET_COL, STATUS_COL]].style.format({
                             HARGA_COL: format_harga,
@@ -675,4 +675,3 @@ elif page == "Ruang Kontrol Brand":
                     st.toast("Sistem telah belajar! Menampilkan produk berikutnya...", icon="✅")
                     time.sleep(1)
                     st.rerun()
-
