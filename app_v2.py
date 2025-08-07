@@ -1,7 +1,7 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.8
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 4.9
 #  Dibuat oleh: Firman & Asisten AI Gemini
-#  Update: Mengubah tabel di Ringkasan Eksekutif menjadi pertumbuhan persen (WoW)
+#  Update: Perbaikan logika perhitungan metrik di Ringkasan Eksekutif
 # ===================================================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ import plotly.express as px
 import time
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.8")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v4.9")
 
 # --- KONFIGURASI ID & NAMA KOLOM (SESUAIKAN DENGAN MILIK ANDA) ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # ID Folder Google Drive Induk
@@ -246,7 +246,7 @@ def convert_df_to_json(df):
     return df_copy.to_json(orient='records', indent=4).encode('utf-8')
 
 # --- ===== START OF STREAMLIT APP ===== ---
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.8")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v4.9")
 
 st.sidebar.header("Kontrol Utama")
 st.sidebar.info("Estimasi waktu proses: 1-3 menit tergantung jumlah file & koneksi.")
@@ -333,18 +333,24 @@ if page == "Ringkasan Eksekutif":
     
     df_latest = df_filtered[df_filtered[TANGGAL_COL] == latest_date_in_data]
 
+    # Metrik 1: Omzet Toko Anda pada tanggal terbaru
     omzet_today_main = df_latest[df_latest[TOKO_COL] == main_store][OMZET_COL].sum()
     units_today_main = df_latest[df_latest[TOKO_COL] == main_store][TERJUAL_COL].sum()
     
+    # --- PERBAIKAN V4.9: Metrik 2 ---
+    # Hitung jumlah produk (baris), bukan sum penjualan
     total_ready = len(df_filtered[df_filtered[STATUS_COL] == 'Tersedia'])
     total_habis = len(df_filtered[df_filtered[STATUS_COL] == 'Habis'])
+    total_produk_periode = total_ready + total_habis
     
-    total_produk_latest = len(df_latest)
+    # --- PERBAIKAN V4.9: Metrik 3 ---
+    # Hitung jumlah unit terjual HANYA dari produk READY pada tanggal terbaru
+    units_sold_latest_ready = df_latest[df_latest[STATUS_COL] == 'Tersedia'][TERJUAL_COL].sum()
     
     col1, col2, col3 = st.columns(3)
     col1.metric(f"Omzet {main_store} (Hari Ini)", format_harga(omzet_today_main), f"{int(units_today_main)} unit terjual")
-    col2.metric("Total Produk (Periode Dipilih)", f"{total_ready + total_habis:,} Produk", f"Tersedia: {total_ready:,} | Habis: {total_habis:,}")
-    col3.metric("Total Produk (Hari Ini)", f"{total_produk_latest:,} Produk")
+    col2.metric("Total Produk (Periode Dipilih)", f"{total_produk_periode:,} Produk", f"Tersedia: {total_ready:,} | Habis: {total_habis:,}")
+    col3.metric("Unit Terjual (Ready Hari Ini)", f"{int(units_sold_latest_ready):,} Unit")
     
     st.divider()
 
@@ -359,7 +365,6 @@ if page == "Ringkasan Eksekutif":
     st.subheader("Tabel Pertumbuhan Omzet Mingguan per Toko (%)")
     weekly_omzet_pivot = df_filtered.groupby(['Minggu', TOKO_COL])[OMZET_COL].sum().unstack()
     
-    # --- PERBAIKAN V4.8: Menghitung persentase pertumbuhan ---
     weekly_growth_pivot = weekly_omzet_pivot.pct_change()
     
     weekly_growth_pivot.index = pd.to_datetime(weekly_growth_pivot.index).strftime('%Y-%m-%d')
