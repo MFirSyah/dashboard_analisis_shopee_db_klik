@@ -1,28 +1,12 @@
-Framework utama aplikasi web
 streamlit
-
-Untuk manipulasi dan analisis data (DataFrame)
 pandas
-
-Untuk interaksi dengan Google Sheets (Database "Otak")
 gspread
-
-Untuk autentikasi dengan semua layanan Google (Drive, Sheets)
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
-
-Library klien Google untuk mengakses API seperti Google Drive
 google-api-python-client
-
-Untuk pencocokan string yang "mirip" (fuzzy matching)
 thefuzz
-
-Opsional tapi SANGAT direkomendasikan untuk mempercepat thefuzz
 python-Levenshtein
-
-Untuk membuat grafik dan visualisasi data interaktif
 plotly
-
-Untuk membaca dan menulis format file Parquet (Cache Cerdas)
 pyarrow
+
