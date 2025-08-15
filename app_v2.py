@@ -5,6 +5,7 @@
 #  Pembaruan kunci v3.4:
 #   - ✅ PERBAIKAN: Mengatasi `HttpError 400: Invalid mime type` dengan mengubah
 #       MIME type file cache parquet menjadi `application/octet-stream` yang valid.
+#   - ✅ PERBAIKAN TAMBAHAN: `load_data_from_cache()` sekarang mendukung cache lama (Google Sheet)
 # ===================================================================================
 
 import streamlit as st
@@ -27,23 +28,14 @@ st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.4 (Final)")
 # =====================================================================================
 # BLOK KONFIGURASI UTAMA
 # =====================================================================================
-# --- ID Folder Google Drive ---
-# ID folder induk "STREAMLIT_ANALISIS_PENJUALAN"
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq"
-
-# NAMA folder, BUKAN ID-nya.
 DATA_MENTAH_FOLDER_NAME = "data_upload"
 DATA_OLAHAN_FOLDER_NAME = "processed_data"
-
 CACHE_FILE_NAME = "master_data.parquet"
-
-# --- ID Google Sheet "Otak" ---
 SPREADSHEET_ID = "1iX-LpYJrHRqD5-c2-D27kVY7PArYLaSCCd-nvd2y6Yg"
 DB_SHEET_NAME = "database_brand"
 KAMUS_SHEET_NAME = "kamus_brand"
 KATEGORI_SHEET_NAME = "DATABASE"
-
-# --- Nama Kolom Konsisten (tidak perlu diubah) ---
 NAMA_PRODUK_COL = "Nama Produk"
 HARGA_COL = "Harga"
 TERJUAL_COL = "Terjual per bulan"
@@ -54,8 +46,6 @@ BRAND_COL = "BRAND"
 TANGGAL_COL = "Tanggal"
 OMZET_COL = "Omzet"
 KATEGORI_COL = "Kategori"
-
-# Kolom minimal yang wajib ada setelah normalisasi
 REQUIRED_COLUMNS = {NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL}
 
 # =====================================================================================
@@ -469,14 +459,33 @@ def check_cache_exists(drive_service, folder_id, filename):
 
 
 def load_data_from_cache(drive_service, file_id):
-    request = drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
+    # Ambil info file untuk deteksi tipe
+    file_info = drive_service.files().get(
+        fileId=file_id, fields="mimeType", supportsAllDrives=True
+    ).execute()
+    mime_type = file_info.get("mimeType", "")
+
     fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
-    fh.seek(0)
-    return pd.read_parquet(fh)
+
+    if mime_type == "application/vnd.google-apps.spreadsheet":
+        # Kalau ternyata Google Sheet lama → export ke CSV
+        st.warning("⚠️ Cache lama terdeteksi (Google Sheet). Mengekspor ke CSV...")
+        request = drive_service.files().export_media(
+            fileId=file_id, mimeType="text/csv", supportsAllDrives=True
+        )
+        fh.write(request.execute())
+        fh.seek(0)
+        return pd.read_csv(fh)
+
+    else:
+        # File biner seperti Parquet
+        request = drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        fh.seek(0)
+        return pd.read_parquet(fh)
 
 
 def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFrame):
@@ -1206,3 +1215,4 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
+
