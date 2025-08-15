@@ -1279,3 +1279,4 @@ if st.session_state.get("diagnostics_passed"):
             st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
             st.session_state.mode = "initial"
             st.rerun()
+
