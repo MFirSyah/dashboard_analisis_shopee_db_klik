@@ -1,14 +1,17 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.2 (Revisi Cerdas)
-#  Dibuat oleh: Firman & Asisten AI
-#  Pembaruan kunci:
-#   - (BARU) Mode koreksi cerdas: ajarkan sekali, berlaku untuk semua.
-#   - (BARU) Tab "Kamus Sistem" untuk melihat database brand & alias.
-#   - Validasi & pembersihan input file mentah yang lebih ketat.
-#   - Retry & backoff untuk panggilan Google API (Drive & Sheets).
-#   - Perbaikan upload cache: gunakan MediaIoBaseUpload + MIME parquet.
-#   - Optimisasi labeling brand dengan cache per-nama-produk (unik).
-#   - Paginated table helper untuk data besar.
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.2 (Batch Correction)
+#  Dibuat oleh: Firman & Asisten AI (revisi menyeluruh)
+#
+#  Pembaruan kunci v3.2:
+#   - ✅ Ruang Kontrol: *Batch correction* — ajarkan sekali, terapkan ke banyak baris
+#   - ✅ Opsi 3 cara terapkan: (1) produk ini saja, (2) semua yang mengandung alias/frasa,
+#       (3) semua nama produk yang mirip (fuzzy, threshold bisa diatur)
+#   - ✅ Simpan alias ke kamus (sheet "kamus_brand") lalu *apply now* ke seluruh data yang cocok
+#   - ✅ Perbaikan regex pencarian brand/alias (\b ... \b yang sebelumnya salah escape)
+#   - ✅ Panel informasi sumber Database & Kamus (Spreadsheet ID + nama sheet)
+#
+#  Catatan kompatibilitas:
+#   - Tetap backward-compatible dengan cache & alur v3.1
 # ===================================================================================
 
 import streamlit as st
@@ -23,10 +26,10 @@ import re
 import plotly.express as px
 import time
 import os
-from typing import Callable, Any, Dict, List, Optional, Tuple
+from typing import Callable, Any, Dict, List, Optional, Tuple, Set
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.2 (Revisi Cerdas)")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.2 (Batch Correction)")
 
 # =====================================================================================
 # BLOK KONFIGURASI UTAMA
@@ -312,7 +315,7 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
     return final_df
 
 
-# --- Fungsi-fungsi Pemrosesan Data (Labeling, Cleaning, etc.) ---
+# --- Fungsi-fungsi Pemrosesan Data (Labeling, Cleaning, dll.) ---
 def process_raw_data(raw_df, brand_db, kamus_brand, db_kategori):
     if raw_df.empty:
         return raw_df
@@ -354,38 +357,39 @@ def process_raw_data(raw_df, brand_db, kamus_brand, db_kategori):
     return df
 
 
-# GANTIKAN FUNGSI LAMA DENGAN YANG INI
+def _tokenize_words_upper(name: str) -> List[str]:
+    """Pisahkan name jadi token huruf/angka (UPPER), buang token pendek (<=2)."""
+    up = str(name).upper()
+    tokens = re.split(r"[^A-Z0-9]+", up)
+    return [t for t in tokens if len(t) > 2]
+
+
 def label_brands(df: pd.DataFrame, brand_db: List[str], kamus_brand: Dict[str, str], fuzzy_threshold: int = 88):
-    """
-    Memberi label brand pada setiap produk berdasarkan kamus, database, dan fuzzy matching.
-    Versi ini selalu membangun ulang kolom BRAND untuk memastikan konsistensi.
-    """
-    df = df.copy() # Bekerja pada salinan untuk menghindari SettingWithCopyWarning
     brand_db_sorted = sorted([b for b in brand_db if isinstance(b, str)], key=len, reverse=True)
 
-    # Precompile pattern untuk alias & brand exact. Ini dibuat setiap kali fungsi dipanggil
-    # untuk memastikan data kamus yang terbaru selalu digunakan.
+    # Perbaikan: gunakan boundary yang benar (\b), bukan literal \\b
     alias_patterns = [
-        (re.compile(rf"\\b{re.escape(str(alias).upper())}\\b"), str(main).upper())
+        (re.compile(rf"\b{re.escape(str(alias).upper())}\b"), str(main).upper())
         for alias, main in kamus_brand.items()
         if isinstance(alias, str) and isinstance(main, str)
     ]
     brand_patterns = [
-        re.compile(rf"\\b{re.escape(b.upper())}\\b") for b in brand_db_sorted if isinstance(b, str)
+        (re.compile(rf"\b{re.escape(b.upper())}\b"), b)
+        for b in brand_db_sorted if isinstance(b, str)
     ]
 
-    # Cache hasil untuk nama produk unik (hanya berlaku dalam satu kali pemanggilan fungsi)
+    # Cache hasil untuk nama produk unik
     name_cache: Dict[str, str] = {}
 
     def _find_brand(name_upper: str) -> str:
-        # Prioritas 1: Kamus alias
+        # Prioritas 1: Kamus alias (exact token)
         for pat, main in alias_patterns:
             if pat.search(name_upper):
                 return main
-        # Prioritas 2: Database brand (eksak atau non-spasi di nama)
+        # Prioritas 2: Database brand (eksak token atau non-spasi di nama)
         name_compact = name_upper.replace(" ", "")
-        for pat, brand in zip(brand_patterns, brand_db_sorted):
-            if pat.search(name_upper) or brand.upper() in name_compact:
+        for pat, brand in brand_patterns:
+            if pat.search(name_upper) or brand.upper().replace(" ", "") in name_compact:
                 return brand
         # Prioritas 3: Fuzzy
         best_match = process.extractOne(name_upper, brand_db_sorted, scorer=fuzz.token_set_ratio)
@@ -393,19 +397,19 @@ def label_brands(df: pd.DataFrame, brand_db: List[str], kamus_brand: Dict[str, s
             return best_match[0]
         return "TIDAK DIKETAHUI"
 
-    # Logika yang disederhanakan dan lebih andal: Selalu bangun ulang kolom BRAND
     brands = []
     for product_name in df[NAMA_PRODUK_COL].astype(str):
-        upper_name = product_name.upper()
-        if upper_name in name_cache:
-            brands.append(name_cache[upper_name])
+        upper = product_name.upper()
+        if upper in name_cache:
+            brands.append(name_cache[upper])
         else:
-            found_brand = _find_brand(upper_name)
-            name_cache[upper_name] = found_brand
-            brands.append(found_brand)
+            found = _find_brand(upper)
+            name_cache[upper] = found
+            brands.append(found)
 
     df[BRAND_COL] = brands
     return df
+
 
 @st.cache_data(show_spinner="Memetakan kategori produk...")
 def map_categories(_df, _db_kategori, fuzzy_threshold: int = 95):
@@ -533,10 +537,21 @@ def paginate_dataframe(df: pd.DataFrame, key: str, page_size: int = 50):
 # =====================================================================================
 
 def display_correction_mode(gsheets_service):
-    st.header("🧠 Ruang Kontrol: Perbaikan Data Brand")
+    st.header("🧠 Ruang Kontrol: Perbaikan Data Brand (Batch)")
     st.warning(
-        "Ditemukan beberapa produk yang brand-nya tidak dikenali. Perbaiki data di bawah ini untuk mengajari sistem."
+        "Ditemukan beberapa produk yang brand-nya tidak dikenali. Perbaiki data di bawah ini sebelum lanjut."
     )
+
+    # Panel info lokasi Database/Kamus
+    with st.expander("🔎 Sumber Database & Kamus (klik untuk lihat)"):
+        st.markdown(
+            f"""
+            - **Spreadsheet 'Otak' ID**: `{SPREADSHEET_ID}`  
+            - **Sheet Database Brand**: `{DB_SHEET_NAME}`  
+            - **Sheet Kamus Alias Brand**: `{KAMUS_SHEET_NAME}`  
+            - **Buka Spreadsheet**: [Klik di sini](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)
+            """
+        )
 
     df_to_fix = st.session_state.df_to_fix
     unknown_products = df_to_fix[df_to_fix[BRAND_COL] == "TIDAK DIKETAHUI"]
@@ -559,18 +574,18 @@ def display_correction_mode(gsheets_service):
         st.rerun()
         return
 
-    st.info(f"Tersisa **{len(unknown_products)} baris data** ({len(unknown_products[NAMA_PRODUK_COL].unique())} produk unik) yang perlu direview.")
+    st.info(f"Tersisa **{len(unknown_products)} produk** yang perlu direview.")
 
     product_to_review = unknown_products.iloc[0]
     st.divider()
-    st.write("Contoh produk yang perlu direview:")
+    st.write("Produk yang perlu direview:")
     st.info(
         f"**{product_to_review[NAMA_PRODUK_COL]}** (dari toko: {product_to_review[TOKO_COL]})"
     )
-    st.markdown("Populasi nama produk yang sama dengan di atas: **{} baris**.".format(
-        len(df_to_fix[df_to_fix[NAMA_PRODUK_COL] == product_to_review[NAMA_PRODUK_COL]])
-    ))
 
+    # --- SUGGEST alias candidates dari nama produk ---
+    suggested_tokens = _tokenize_words_upper(product_to_review[NAMA_PRODUK_COL])
+    default_alias = suggested_tokens[0] if suggested_tokens else ""
 
     with st.form(key="review_form_single"):
         st.subheader("Apa brand yang benar untuk produk ini?")
@@ -590,11 +605,36 @@ def display_correction_mode(gsheets_service):
         st.divider()
         st.subheader("Ajari sistem tentang Alias (Nama Lain)")
         alias_input = st.text_input(
-            "Jika produk ini punya nama lain/singkatan (contoh: 'Armaggeddon'), masukkan di sini:",
-            help="Ini adalah bagian terpenting. Masukkan kata kunci unik untuk brand ini.",
+            "Alias/frasa untuk mendeteksi brand ini (opsional, direkomendasikan)",
+            value=default_alias,
+            help="Contoh: 'ARMAGGEDDON' agar semua produk yang mengandung frasa itu dipetakan ke brand utama.",
         )
 
-        submitted = st.form_submit_button("Ajarkan ke Sistem & Proses Ulang")
+        st.divider()
+        st.subheader("Cara menerapkan pembelajaran ini")
+        apply_mode = st.radio(
+            "Pilih mode penerapan:",
+            [
+                "Produk ini saja",
+                "Semua produk yang MENGANDUNG frasa/alias di atas",
+                "Semua produk yang MIRIP dengan produk ini (fuzzy)",
+            ],
+            index=1,
+            help=(
+                "Pilih 'Mengandung frasa' untuk update massal berdasarkan kata/alias. "
+                "Pilih 'Mirip (fuzzy)' untuk menjaring nama-nama yang sangat mirip."
+            ),
+        )
+        fuzzy_threshold = st.slider(
+            "Ambang kemiripan (fuzzy) %",
+            min_value=80,
+            max_value=100,
+            value=90,
+            step=1,
+            help="Dipakai ketika memilih mode fuzzy.",
+        )
+
+        submitted = st.form_submit_button("Ajarkan ke Sistem & Terapkan ▶")
 
         if submitted:
             final_brand = ""
@@ -606,7 +646,7 @@ def display_correction_mode(gsheets_service):
             if not final_brand:
                 st.error("Anda harus memilih brand yang sudah ada atau memasukkan brand baru.")
             else:
-                # Update Google Sheet "Otak"
+                # 1) Simpan brand baru ke database brand jika perlu
                 if new_brand_input and final_brand not in st.session_state.brand_db:
                     try:
                         sheet = gsheets_service.open_by_key(SPREADSHEET_ID).worksheet(DB_SHEET_NAME)
@@ -619,38 +659,55 @@ def display_correction_mode(gsheets_service):
                     except Exception as e:
                         st.error(f"Gagal menyimpan brand baru ke Google Sheet: {e}")
 
-                if alias_input:
+                # 2) Simpan alias ke kamus jika diisi
+                alias_saved = False
+                alias_used = alias_input.strip().upper() if alias_input else ""
+                if alias_used:
                     try:
-                        alias_clean = alias_input.strip().upper()
                         sheet = gsheets_service.open_by_key(SPREADSHEET_ID).worksheet(KAMUS_SHEET_NAME)
-                        sheet.append_row(
-                            [alias_clean, final_brand],
-                            value_input_option="USER_ENTERED",
-                        )
-                        # --- PERUBAHAN DIMULAI: Update kamus di memori juga ---
-                        st.session_state.kamus_brand[alias_clean] = final_brand
-                        # --- PERUBAHAN SELESAI ---
+                        sheet.append_row([alias_used, final_brand], value_input_option="USER_ENTERED")
+                        alias_saved = True
                         st.toast(
-                            f"Alias '{alias_clean}' untuk '{final_brand}' berhasil disimpan.",
+                            f"Alias '{alias_used}' → '{final_brand}' disimpan ke kamus.",
                             icon="📚",
                         )
                     except Exception as e:
                         st.error(f"Gagal menyimpan alias ke Google Sheet: {e}")
 
+                # 3) Tentukan baris-baris yang akan diupdate (BATCH)
+                indices_to_update: Set[int] = set()
 
-                # --- PERUBAHAN DIMULAI: Logika Koreksi Cerdas ---
-                # Daripada hanya mengubah 1 produk, kita proses ulang SELURUH dataframe
-                # yang masih bermasalah dengan "otak" yang baru saja diupdate.
-                st.toast("Sistem telah belajar! Memproses ulang semua produk...", icon="🧠")
-                with st.spinner("Menerapkan aturan baru ke sisa produk..."):
-                    # Jalankan ulang pelabelan pada dataframe yang sedang diperbaiki
-                    st.session_state.df_to_fix = label_brands(
-                        st.session_state.df_to_fix,
-                        st.session_state.brand_db,
-                        st.session_state.kamus_brand
-                    )
-                # --- PERUBAHAN SELESAI ---
+                # Selalu update produk ini minimal
+                name_now = product_to_review[NAMA_PRODUK_COL]
+                cur_idx = df_to_fix[
+                    (df_to_fix[NAMA_PRODUK_COL] == name_now) & (df_to_fix[BRAND_COL] == "TIDAK DIKETAHUI")
+                ].index
+                indices_to_update.update(cur_idx)
 
+                unknown_df = df_to_fix[df_to_fix[BRAND_COL] == "TIDAK DIKETAHUI"][NAMA_PRODUK_COL].astype(str)
+
+                if apply_mode == "Semua produk yang MENGANDUNG frasa/alias di atas":
+                    key = alias_used or final_brand
+                    key = key.strip().upper()
+                    if key:
+                        mask = unknown_df.str.upper().str.contains(re.escape(key), regex=True)
+                        indices_to_update.update(unknown_df[mask].index.tolist())
+
+                elif apply_mode == "Semua produk yang MIRIP dengan produk ini (fuzzy)":
+                    base_name = str(name_now)
+                    for i, p in unknown_df.items():
+                        score = fuzz.token_set_ratio(base_name, p)
+                        if score >= fuzzy_threshold:
+                            indices_to_update.add(i)
+
+                # 4) Terapkan brand ke semua indeks terpilih
+                if not indices_to_update:
+                    st.warning("Tidak ada baris yang cocok untuk diupdate.")
+                else:
+                    st.session_state.df_to_fix.loc[list(indices_to_update), BRAND_COL] = final_brand
+                    st.success(f"Berhasil update brand '{final_brand}' ke {len(indices_to_update)} baris.")
+
+                st.toast("Sistem telah belajar! Menampilkan produk berikutnya...", icon="✅")
                 time.sleep(0.8)
                 st.rerun()
 
@@ -789,7 +846,6 @@ def display_main_dashboard(df):
     # ============================= Analisis Mendalam =============================
     elif page == "Analisis Mendalam":
         st.header("🔍 Analisis Mendalam")
-        # --- PERUBAHAN DIMULAI: Menambahkan Tab "Kamus Sistem" ---
         tab_titles = [
             f"⭐ Toko Saya ({main_store})",
             "⚖️ Perbandingan Harga",
@@ -797,10 +853,8 @@ def display_main_dashboard(df):
             "📦 Status Stok",
             "📈 Kinerja Penjualan",
             "📊 Produk Baru",
-            "🗂️ Kamus Sistem", # Tab Baru
         ]
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(tab_titles)
-        # --- PERUBAHAN SELESAI ---
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(tab_titles)
 
         with tab1:
             st.subheader("1. Produk Terlaris")
@@ -977,29 +1031,6 @@ def display_main_dashboard(df):
                                     use_container_width=True,
                                     hide_index=True,
                                 )
-        # --- PERUBAHAN DIMULAI: Konten untuk Tab "Kamus Sistem" ---
-        with tab7:
-            st.subheader("Database 'Otak' Sistem")
-            st.info(f"Database ini diambil langsung dari Google Sheet. Untuk mengedit atau menghapus, buka [Google Sheet 'Otak'](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit) secara langsung.")
-
-            st.markdown("---")
-            st.write("#### Kamus Alias Brand")
-            st.caption("Sistem akan mencari 'Alias' ini di nama produk untuk menentukan 'Brand Utama'-nya.")
-            if "kamus_brand" in st.session_state and st.session_state.kamus_brand:
-                kamus_df = pd.DataFrame(list(st.session_state.kamus_brand.items()), columns=['Alias', 'Brand_Utama'])
-                st.dataframe(kamus_df.sort_values(by='Alias').reset_index(drop=True), use_container_width=True, hide_index=True)
-            else:
-                st.warning("Kamus brand kosong atau belum dimuat.")
-
-            st.markdown("---")
-            st.write("#### Database Brand Utama")
-            st.caption("Ini adalah daftar resmi semua brand yang dikenali oleh sistem.")
-            if "brand_db" in st.session_state and st.session_state.brand_db:
-                brand_db_df = pd.DataFrame(st.session_state.brand_db, columns=['Brand'])
-                st.dataframe(brand_db_df.sort_values(by='Brand').reset_index(drop=True), use_container_width=True, hide_index=True)
-            else:
-                st.warning("Database brand kosong atau belum dimuat.")
-        # --- PERUBAHAN SELESAI ---
 
     # ============================= Analisis Produk Tunggal =============================
     elif page == "Analisis Produk Tunggal":
@@ -1051,8 +1082,8 @@ def display_main_dashboard(df):
 # ALUR KERJA UTAMA APLIKASI
 # =====================================================================================
 
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.2 (Revisi Cerdas)")
-st.markdown("Versi dengan *Koreksi Cerdas*, *Kamus Sistem*, *Cache*, dan *optimisasi performa & keandalan*.")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.2 (Batch Correction)")
+st.markdown("Versi dengan *Cache Cerdas*, *Gerbang Kualitas Data*, *Batch Correction*, dan perbaikan regex.")
 
 # Inisialisasi session_state
 st.session_state.setdefault("mode", "initial")
@@ -1070,15 +1101,6 @@ if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
         drive_service, gsheets_service = get_google_apis()
         st.session_state.drive_service = drive_service
         st.session_state.gsheets_service = gsheets_service
-
-        # --- PERUBAHAN DIMULAI: Muat "Otak" di awal agar selalu tersedia ---
-        # "Otak" (brand_db, kamus, dll.) dibutuhkan baik saat load dari cache maupun proses baru
-        # Contohnya untuk menampilkan tab "Kamus Sistem"
-        brand_db, kamus_brand, db_kategori = load_intelligence_data(gsheets_service, SPREADSHEET_ID)
-        st.session_state.brand_db = brand_db
-        st.session_state.kamus_brand = kamus_brand
-        st.session_state.db_kategori = db_kategori
-        # --- PERUBAHAN SELESAI ---
 
         # 2. Cari folder data mentah & olahan
         data_mentah_folder_id = find_folder_id(drive_service, PARENT_FOLDER_ID, DATA_MENTAH_FOLDER_NAME)
@@ -1098,6 +1120,10 @@ if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
             # Jalur berat
             st.toast("Cache cerdas tidak ditemukan. Memulai proses data dari awal...", icon="🐌")
 
+            # Muat data "otak"
+            brand_db, kamus_brand, db_kategori = load_intelligence_data(gsheets_service, SPREADSHEET_ID)
+            st.session_state.brand_db = brand_db
+
             # Baca semua data mentah
             raw_df = get_raw_data_from_drive(drive_service, data_mentah_folder_id)
 
@@ -1105,7 +1131,7 @@ if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
                 st.warning("Tidak ada data mentah yang bisa diproses.")
                 st.session_state.mode = "initial"
             else:
-                # Proses data mentah menggunakan "otak" yang sudah dimuat
+                # Proses data mentah
                 processed_df = process_raw_data(raw_df, brand_db, kamus_brand, db_kategori)
 
                 # Gerbang Kualitas Data
@@ -1139,7 +1165,7 @@ STREAMLIT_ANALISIS_PENJUALAN/ (ID: {PARENT_FOLDER_ID})
 |-- 📂 {DATA_OLAHAN_FOLDER_NAME}/
 |   `-- (Folder ini akan diisi otomatis oleh aplikasi)
 |
-`-- 📜 (File Google Sheet 'Otak' Anda dengan ID: {SPREADSHEET_ID})
+`-- 📜 (File Google Sheet 'Otak' Anda)
         """,
         language="text",
     )
@@ -1152,4 +1178,3 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
-
