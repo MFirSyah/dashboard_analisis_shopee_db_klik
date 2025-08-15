@@ -1179,3 +1179,4 @@ elif st.session_state.mode == "dashboard":
         st.session_state.mode = "initial"
         st.rerun()
 
+
