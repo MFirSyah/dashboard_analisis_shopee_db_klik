@@ -28,7 +28,7 @@ st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.4 (Final)")
 # =====================================================================================
 # BLOK KONFIGURASI UTAMA
 # =====================================================================================
-PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq"
+PARENT_FOLDER_ID = "12Lpj2FtaXdtHmpPCHTKfLaLjAziuulcb"
 DATA_MENTAH_FOLDER_NAME = "data_upload"
 DATA_OLAHAN_FOLDER_NAME = "processed_data"
 CACHE_FILE_NAME = "master_data.parquet"
@@ -1227,3 +1227,4 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
+
