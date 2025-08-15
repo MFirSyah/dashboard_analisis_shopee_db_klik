@@ -354,10 +354,17 @@ def process_raw_data(raw_df, brand_db, kamus_brand, db_kategori):
     return df
 
 
+# GANTIKAN FUNGSI LAMA DENGAN YANG INI
 def label_brands(df: pd.DataFrame, brand_db: List[str], kamus_brand: Dict[str, str], fuzzy_threshold: int = 88):
+    """
+    Memberi label brand pada setiap produk berdasarkan kamus, database, dan fuzzy matching.
+    Versi ini selalu membangun ulang kolom BRAND untuk memastikan konsistensi.
+    """
+    df = df.copy() # Bekerja pada salinan untuk menghindari SettingWithCopyWarning
     brand_db_sorted = sorted([b for b in brand_db if isinstance(b, str)], key=len, reverse=True)
 
-    # Precompile pattern untuk alias & brand exact
+    # Precompile pattern untuk alias & brand exact. Ini dibuat setiap kali fungsi dipanggil
+    # untuk memastikan data kamus yang terbaru selalu digunakan.
     alias_patterns = [
         (re.compile(rf"\\b{re.escape(str(alias).upper())}\\b"), str(main).upper())
         for alias, main in kamus_brand.items()
@@ -367,7 +374,7 @@ def label_brands(df: pd.DataFrame, brand_db: List[str], kamus_brand: Dict[str, s
         re.compile(rf"\\b{re.escape(b.upper())}\\b") for b in brand_db_sorted if isinstance(b, str)
     ]
 
-    # Cache hasil untuk nama produk unik
+    # Cache hasil untuk nama produk unik (hanya berlaku dalam satu kali pemanggilan fungsi)
     name_cache: Dict[str, str] = {}
 
     def _find_brand(name_upper: str) -> str:
@@ -386,30 +393,19 @@ def label_brands(df: pd.DataFrame, brand_db: List[str], kamus_brand: Dict[str, s
             return best_match[0]
         return "TIDAK DIKETAHUI"
 
+    # Logika yang disederhanakan dan lebih andal: Selalu bangun ulang kolom BRAND
     brands = []
-    # --- PERUBAHAN DIMULAI: Pastikan kolom 'BRAND' ada sebelum diisi ---
-    # Jika kolom BRAND sudah ada (misalnya dari proses ulang), kita hanya mengisi yang "TIDAK DIKETAHUI"
-    # Jika tidak, kita buat kolom baru. Ini penting untuk logika 'correction mode' yang baru.
-    if BRAND_COL in df.columns:
-        # Hanya proses ulang baris yang masih belum diketahui
-        df[BRAND_COL] = df.apply(
-            lambda row: _find_brand(str(row[NAMA_PRODUK_COL]).upper()) if row[BRAND_COL] == "TIDAK DIKETAHUI" else row[BRAND_COL],
-            axis=1
-        )
-    else:
-        # Proses semua baris untuk pertama kalinya
-        for product_name in df[NAMA_PRODUK_COL].astype(str):
-            upper = product_name.upper()
-            if upper in name_cache:
-                brands.append(name_cache[upper])
-            else:
-                found = _find_brand(upper)
-                name_cache[upper] = found
-                brands.append(found)
-        df[BRAND_COL] = brands
-    # --- PERUBAHAN SELESAI ---
-    return df
+    for product_name in df[NAMA_PRODUK_COL].astype(str):
+        upper_name = product_name.upper()
+        if upper_name in name_cache:
+            brands.append(name_cache[upper_name])
+        else:
+            found_brand = _find_brand(upper_name)
+            name_cache[upper_name] = found_brand
+            brands.append(found_brand)
 
+    df[BRAND_COL] = brands
+    return df
 
 @st.cache_data(show_spinner="Memetakan kategori produk...")
 def map_categories(_df, _db_kategori, fuzzy_threshold: int = 95):
@@ -1156,3 +1152,4 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
+
