@@ -1,14 +1,10 @@
 # ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.3 (Perbaikan Stabilitas)
+#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR - VERSI 3.4 (Final)
 #  Dibuat oleh: Firman & Asisten AI (revisi menyeluruh)
 #
-#  Pembaruan kunci v3.3:
-#   - ✅ PERBAIKAN: Kompatibilitas penuh dengan Google Shared Drive dengan menambahkan
-#       parameter `supportsAllDrives=True` ke semua pemanggilan API (list, get, export).
-#   - ✅ PERBAIKAN: Mengatasi `AttributeError: 'list' has no attribute 'items'` dengan
-#       memastikan fungsi `get_raw_data_from_drive` selalu mengembalikan DataFrame,
-#       bahkan jika tidak ada data yang ditemukan.
-#   - ✅ Peningkatan stabilitas minor lainnya.
+#  Pembaruan kunci v3.4:
+#   - ✅ PERBAIKAN: Mengatasi `HttpError 400: Invalid mime type` dengan mengubah
+#       MIME type file cache parquet menjadi `application/octet-stream` yang valid.
 # ===================================================================================
 
 import streamlit as st
@@ -26,7 +22,7 @@ import os
 from typing import Callable, Any, Dict, List, Optional, Tuple, Set
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.3 (Perbaikan Stabilitas)")
+st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.4 (Final)")
 
 # =====================================================================================
 # BLOK KONFIGURASI UTAMA
@@ -140,7 +136,6 @@ def find_folder_id(_drive_service, parent_id, folder_name):
 
     @with_retry
     def _list():
-        # PERBAIKAN v3.3: Tambahkan `supportsAllDrives` untuk kompatibilitas Shared Drive
         return _drive_service.files().list(
             q=query,
             fields="files(id, name)",
@@ -205,7 +200,6 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
 
     @with_retry
     def _list_subfolders():
-        # PERBAIKAN v3.3: Tambahkan `supportsAllDrives`
         return _drive_service.files().list(
             q=query_subfolders,
             fields="files(id, name)",
@@ -235,7 +229,6 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
 
         @with_retry
         def _list_files():
-            # PERBAIKAN v3.3: Tambahkan `supportsAllDrives`
             return _drive_service.files().list(
                 q=file_query,
                 fields="files(id, name, mimeType)",
@@ -253,11 +246,9 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
             try:
                 # Unduh (konversi GSheet -> CSV jika perlu)
                 if mime_type == "application/vnd.google-apps.spreadsheet":
-                    # PERBAIKAN v3.3: Tambahkan `supportsAllDrives`
                     request = _drive_service.files().export_media(fileId=file_id, mimeType="text/csv", supportsAllDrives=True)
                     content = io.BytesIO(request.execute())
                 else:
-                    # PERBAIKAN v3.3: Tambahkan `supportsAllDrives`
                     request = _drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
                     buf = io.BytesIO()
                     downloader = MediaIoBaseDownload(buf, request)
@@ -332,7 +323,6 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
         st.warning("Tidak ada data valid yang ditemukan di semua folder toko.")
         return pd.DataFrame()
 
-    # PERBAIKAN v3.3: Pastikan untuk menggabungkan data menjadi DataFrame tunggal
     final_df = pd.concat(all_data, ignore_index=True)
     return final_df
 
@@ -467,7 +457,6 @@ def check_cache_exists(drive_service, folder_id, filename):
 
     @with_retry
     def _list():
-        # PERBAIKAN v3.3: Tambahkan `supportsAllDrives`
         return drive_service.files().list(
             q=query,
             fields="files(id)",
@@ -480,7 +469,6 @@ def check_cache_exists(drive_service, folder_id, filename):
 
 
 def load_data_from_cache(drive_service, file_id):
-    # PERBAIKAN v3.3: Tambahkan `supportsAllDrives`
     request = drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
@@ -498,13 +486,13 @@ def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFr
 
     existing_files = check_cache_exists(drive_service, folder_id, filename)
 
-    media_body = MediaIoBaseUpload(buffer, mimetype="application/x-parquet", resumable=True)
-
-    file_metadata = {"name": filename, "parents": [folder_id], "mimeType": "application/x-parquet"}
+    # PERBAIKAN v3.4: Gunakan MIME type yang valid dan generik
+    generic_mimetype = "application/octet-stream"
+    media_body = MediaIoBaseUpload(buffer, mimetype=generic_mimetype, resumable=True)
+    file_metadata = {"name": filename, "parents": [folder_id], "mimeType": generic_mimetype}
 
     if existing_files:
         file_id = existing_files[0]["id"]
-        # PERBAIKAN v3.3: Tambahkan `supportsAllDrives`
         drive_service.files().update(
             fileId=file_id,
             media_body=media_body,
@@ -512,7 +500,6 @@ def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFr
         ).execute()
         st.toast(f"Cache cerdas '{filename}' berhasil diperbarui.", icon="🔄")
     else:
-        # PERBAIKAN v3.3: Tambahkan `supportsAllDrives`
         drive_service.files().create(
             body=file_metadata,
             media_body=media_body,
@@ -1123,7 +1110,7 @@ def display_main_dashboard(df):
 # ALUR KERJA UTAMA APLIKASI
 # =====================================================================================
 
-st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.3 (Perbaikan Stabilitas)")
+st.title("📊 Dashboard Analisis Penjualan & Kompetitor v3.4 (Final)")
 st.markdown("Versi dengan *Cache Cerdas*, *Gerbang Kualitas Data*, *Batch Correction*, dan perbaikan regex.")
 
 # Inisialisasi session_state
