@@ -87,18 +87,124 @@ def read_csv_safely(byte_stream: io.BytesIO) -> pd.DataFrame:
 # =====================================================================================
 
 # --- Fungsi Otentikasi & Koneksi ---
-@st.cache_resource(show_spinner="Menghubungkan ke Google API...")
-def get_google_apis():
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ],
+@st.cache_data(show_spinner="Membaca semua data mentah dari folder kompetitor...", ttl=3600)
+def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
+    all_data = []
+
+    query_subfolders = (
+        f"'{data_mentah_folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     )
-    drive_service = build("drive", "v3", credentials=creds)
-    gsheets_service = gspread.authorize(creds)
-    return drive_service, gsheets_service
+
+    @with_retry
+    def _list_subfolders():
+        return _drive_service.files().list(
+            q=query_subfolders,
+            fields="files(id, name)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+
+    results = _list_subfolders()
+    subfolders = results.get("files", [])
+
+    if not subfolders:
+        st.warning("Tidak ada subfolder (toko) yang ditemukan di dalam folder data mentah.")
+        return pd.DataFrame()
+
+    progress_bar = st.progress(0, text="Membaca data...")
+    date_regex = re.compile(r"(\d{4}[-_]\d{2}[-_]\d{2})")
+
+    for i, folder in enumerate(subfolders):
+        progress_text = f"Membaca folder toko: {folder['name']}..."
+        progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
+
+        # Kueri ini mengambil SEMUA file, agar kita bisa memfilter secara manual
+        file_query = f"'{folder['id']}' in parents and trashed = false"
+
+        @with_retry
+        def _list_files():
+            return _drive_service.files().list(
+                q=file_query,
+                fields="files(id, name, mimeType)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute()
+
+        files_in_folder = _list_files().get("files", [])
+
+        for file_item in files_in_folder:
+            file_id = file_item.get("id")
+            file_name = file_item.get("name")
+            mime_type = file_item.get("mimeType")
+            content = None
+
+            try:
+                # --- PERBAIKAN KUNCI ---
+                # Logika baru untuk menangani tipe file secara eksplisit
+                if mime_type == 'application/vnd.google-apps.spreadsheet':
+                    # Ekspor Google Sheet ke CSV
+                    request = _drive_service.files().export_media(fileId=file_id, mimeType="text/csv", supportsAllDrives=True)
+                    content = io.BytesIO(request.execute())
+                elif mime_type == 'text/csv':
+                    # Unduh file CSV biasa
+                    request = _drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
+                    buf = io.BytesIO()
+                    downloader = MediaIoBaseDownload(buf, request)
+                    done = False
+                    while not done:
+                        _, done = downloader.next_chunk()
+                    content = buf
+                else:
+                    # Lewati file yang tidak didukung (misal: Google Docs, gambar, dll.)
+                    st.warning(f"File '{file_name}' di folder '{folder['name']}' dilewati karena tipe file ({mime_type}) tidak didukung.")
+                    continue
+
+                if content is None or content.getbuffer().nbytes == 0:
+                    st.warning(f"FILE KOSONG: '{file_name}' di folder '{folder['name']}' dilewati.")
+                    continue
+
+                # Lanjutan proses sama seperti sebelumnya...
+                df = read_csv_safely(content)
+
+                rename_map_variants = {
+                    "Nama Produk": NAMA_PRODUK_COL, "Nama": NAMA_PRODUK_COL, "nama": NAMA_PRODUK_COL,
+                    "nama_produk": NAMA_PRODUK_COL, "HARGA": HARGA_COL, "Harga": HARGA_COL, "harga": HARGA_COL,
+                    "Terjual/BLN": TERJUAL_COL, "Terjual/Bln": TERJUAL_COL, "Terjual per Bulan": TERJUAL_COL,
+                    "Terjual per bulan": TERJUAL_COL, "terjual/bln": TERJUAL_COL, "Link": LINK_COL,
+                }
+                df.rename(columns=lambda c: rename_map_variants.get(str(c).strip(), str(c).strip()), inplace=True)
+
+                df[TOKO_COL] = folder["name"]
+                m = date_regex.search(file_name)
+                df[TANGGAL_COL] = pd.to_datetime(m.group(1).replace("_", "-"), errors="coerce") if m else pd.NaT
+
+                low_name = str(file_name).lower()
+                if "ready" in low_name:
+                    df[STATUS_COL] = "Tersedia"
+                elif "habis" in low_name:
+                    df[STATUS_COL] = "Habis"
+                else:
+                    df[STATUS_COL] = "N/A"
+
+                missing = REQUIRED_COLUMNS - set(df.columns)
+                if missing:
+                    st.warning(f"Lewati file '{file_name}' di '{folder['name']}' karena kolom wajib hilang: {sorted(missing)}")
+                    continue
+
+                all_data.append(df)
+            except Exception as file_error:
+                st.error(f"GAGAL BACA FILE: Error saat memproses '{file_name}' di folder '{folder['name']}'.")
+                st.error(f"Detail: {file_error}")
+                st.info("File dilewati. Lanjut memproses file lain.")
+                continue
+
+    progress_bar.empty()
+
+    if not all_data:
+        st.warning("Tidak ada data valid yang ditemukan di semua folder toko.")
+        return pd.DataFrame()
+
+    return pd.concat(all_data, ignore_index=True)
 
 # --- Fungsi untuk Manajemen Folder di Google Drive ---
 @st.cache_data(show_spinner="Mencari ID folder di Google Drive...")
@@ -1227,5 +1333,6 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
+
 
 
