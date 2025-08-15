@@ -54,10 +54,7 @@ REQUIRED_COLUMNS = {NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL}
 
 def with_retry(fn: Callable, max_attempts: int = 4, base_delay: float = 1.0, exc_types: Tuple = (Exception,),
             before_msg: Optional[str] = None, fail_msg: Optional[str] = None):
-    """Jalankan fungsi dengan retry + backoff linear (1x, 2x, 3x...)."""
     def wrapper(*args, **kwargs):
-        if before_msg:
-            st.session_state.get("_log", [])
         for attempt in range(1, max_attempts + 1):
             try:
                 return fn(*args, **kwargs)
@@ -66,16 +63,13 @@ def with_retry(fn: Callable, max_attempts: int = 4, base_delay: float = 1.0, exc
                     if fail_msg:
                         st.error(f"{fail_msg}: {e}")
                     raise
-                sleep_for = base_delay * attempt
-                st.info(f"Percobaan {attempt}/{max_attempts-1} gagal. Coba lagi dalam {sleep_for:.1f}s...")
-                time.sleep(sleep_for)
+                time.sleep(base_delay * attempt)
     return wrapper
 
 CSV_POSSIBLE_ENCODINGS = ["utf-8", "utf-8-sig", "latin1"]
 
 
 def read_csv_safely(byte_stream: io.BytesIO) -> pd.DataFrame:
-    """Coba baca CSV dengan beberapa encoding & delimiter umum; fallback ke pandas auto."""
     byte_stream.seek(0)
     raw = byte_stream.read()
     for enc in CSV_POSSIBLE_ENCODINGS:
@@ -86,12 +80,7 @@ def read_csv_safely(byte_stream: io.BytesIO) -> pd.DataFrame:
                     return df
             except Exception:
                 pass
-    # Fallback keras ke pandas deteksi otomatis
-    try:
-        return pd.read_csv(io.BytesIO(raw))
-    except Exception as e:
-        raise ValueError(f"Gagal membaca CSV dengan semua percobaan: {e}")
-
+    return pd.read_csv(io.BytesIO(raw))
 
 # =====================================================================================
 # FUNGSI-FUNGSI INTI (BACKEND)
@@ -100,21 +89,16 @@ def read_csv_safely(byte_stream: io.BytesIO) -> pd.DataFrame:
 # --- Fungsi Otentikasi & Koneksi ---
 @st.cache_resource(show_spinner="Menghubungkan ke Google API...")
 def get_google_apis():
-    try:
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=[
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive",
-            ],
-        )
-        drive_service = build("drive", "v3", credentials=creds)
-        gsheets_service = gspread.authorize(creds)
-        return drive_service, gsheets_service
-    except Exception as e:
-        st.error(f"Gagal autentikasi ke Google. Cek secrets.toml. Error: {e}")
-        st.stop()
-
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ],
+    )
+    drive_service = build("drive", "v3", credentials=creds)
+    gsheets_service = gspread.authorize(creds)
+    return drive_service, gsheets_service
 
 # --- Fungsi untuk Manajemen Folder di Google Drive ---
 @st.cache_data(show_spinner="Mencari ID folder di Google Drive...")
@@ -444,7 +428,6 @@ def map_categories(_df, _db_kategori, fuzzy_threshold: int = 95):
 # --- Fungsi Manajemen Cache Cerdas (Parquet) ---
 def check_cache_exists(drive_service, folder_id, filename):
     query = f"'{folder_id}' in parents and name = '{filename}' and trashed = false"
-
     @with_retry
     def _list():
         return drive_service.files().list(
@@ -453,10 +436,7 @@ def check_cache_exists(drive_service, folder_id, filename):
             supportsAllDrives=True,
             includeItemsFromAllDrives=True
         ).execute()
-
-    response = _list()
-    return response.get("files", [])
-
+    return _list().get("files", [])
 
 def load_data_from_cache(drive_service, file_id):
     # Ambil info file untuk deteksi tipe
@@ -493,12 +473,27 @@ def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFr
     df_to_save.to_parquet(buffer, index=False)
     buffer.seek(0)
 
-    existing_files = check_cache_exists(drive_service, folder_id, filename)
+    # ✅ Deteksi driveId untuk memastikan file tersimpan di Shared Drive
+    folder_info = drive_service.files().get(
+        fileId=folder_id,
+        fields="id, name, driveId",
+        supportsAllDrives=True
+    ).execute()
+    drive_id = folder_info.get("driveId")
+    if not drive_id:
+        st.error("⚠️ Folder target bukan Shared Drive. Pindahkan folder ke Shared Drive atau bagikan sebagai editor.")
+        st.stop()
 
-    # PERBAIKAN v3.4: Gunakan MIME type yang valid dan generik
+    existing_files = check_cache_exists(drive_service, folder_id, filename)
     generic_mimetype = "application/octet-stream"
     media_body = MediaIoBaseUpload(buffer, mimetype=generic_mimetype, resumable=True)
-    file_metadata = {"name": filename, "parents": [folder_id], "mimeType": generic_mimetype}
+
+    file_metadata = {
+        "name": filename,
+        "parents": [folder_id],
+        "mimeType": generic_mimetype,
+        "driveId": drive_id
+    }
 
     if existing_files:
         file_id = existing_files[0]["id"]
@@ -507,7 +502,7 @@ def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFr
             media_body=media_body,
             supportsAllDrives=True
         ).execute()
-        st.toast(f"Cache cerdas '{filename}' berhasil diperbarui.", icon="🔄")
+        st.toast(f"Cache '{filename}' diperbarui di Shared Drive.", icon="🔄")
     else:
         drive_service.files().create(
             body=file_metadata,
@@ -515,7 +510,7 @@ def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFr
             fields="id",
             supportsAllDrives=True
         ).execute()
-        st.toast(f"Cache cerdas '{filename}' berhasil dibuat.", icon="✅")
+        st.toast(f"Cache '{filename}' dibuat di Shared Drive.", icon="✅")
 
 
 # --- Fungsi Bantuan untuk UI ---
