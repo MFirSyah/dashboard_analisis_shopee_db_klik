@@ -35,9 +35,14 @@ st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.2 (Batch Cor
 # BLOK KONFIGURASI UTAMA
 # =====================================================================================
 # --- ID & Nama Aset Google Drive ---
-PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq"
-DATA_MENTAH_FOLDER_NAME = "1vOAqYvfOIYHFIwbOJTNiNMys_xjc2Q4r"
-DATA_OLAHAN_FOLDER_NAME = "18RhE-XYW-ZLjl0TrkfIVfIvZ8u48ENRN"
+# --- Perbaikan yang Benar ---
+PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # Ini sudah benar, berisi ID
+
+# Ubah ini menjadi NAMA folder, bukan ID
+DATA_MENTAH_FOLDER_NAME = "data_upload" # <-- Ganti dengan nama folder data mentah Anda
+DATA_OLAHAN_FOLDER_NAME = "processed_data" # <-- Ganti dengan nama folder data olahan Anda
+
+CACHE_FILE_NAME = "master_data.parquet"
 CACHE_FILE_NAME = "master_data.parquet"
 
 # --- ID Google Sheet "Otak" ---
@@ -1178,5 +1183,6 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
+
 
 
