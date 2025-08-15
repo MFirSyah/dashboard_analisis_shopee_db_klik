@@ -53,7 +53,7 @@ REQUIRED_COLUMNS = {NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL}
 # =====================================================================================
 
 def with_retry(fn: Callable, max_attempts: int = 4, base_delay: float = 1.0, exc_types: Tuple = (Exception,),
-               before_msg: Optional[str] = None, fail_msg: Optional[str] = None):
+            before_msg: Optional[str] = None, fail_msg: Optional[str] = None):
     """Jalankan fungsi dengan retry + backoff linear (1x, 2x, 3x...)."""
     def wrapper(*args, **kwargs):
         if before_msg:
@@ -1215,4 +1215,3 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
-
