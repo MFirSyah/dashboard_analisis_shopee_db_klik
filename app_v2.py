@@ -28,11 +28,11 @@ st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.4 (Final)")
 # =====================================================================================
 # BLOK KONFIGURASI UTAMA
 # =====================================================================================
-PARENT_FOLDER_ID = "182t10RUqAhb5ZGMd_Ld9oDXlCh_9x0CU"
+PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq"
 DATA_MENTAH_FOLDER_NAME = "data_upload"
 DATA_OLAHAN_FOLDER_NAME = "processed_data"
 CACHE_FILE_NAME = "master_data.parquet"
-SPREADSHEET_ID = "1h3eUp_6t9RXtO_Q_mgCaDiwhOBBhbRBNejVyiFEIx0g"
+SPREADSHEET_ID = "1iX-LpYJrHRqD5-c2-D27kVY7PArYLaSCCd-nvd2y6Yg"
 DB_SHEET_NAME = "database_brand"
 KAMUS_SHEET_NAME = "kamus_brand"
 KATEGORI_SHEET_NAME = "DATABASE"
@@ -87,124 +87,43 @@ def read_csv_safely(byte_stream: io.BytesIO) -> pd.DataFrame:
 # =====================================================================================
 
 # --- Fungsi Otentikasi & Koneksi ---
-@st.cache_data(show_spinner="Membaca semua data mentah dari folder kompetitor...", ttl=3600)
-def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
-    all_data = []
+@st.cache_resource(show_spinner="Menghubungkan ke Google API...")
+def get_google_apis():
+    # --- PERBAIKAN KUNCI & KODE DIAGNOSTIK ---
+    try:
+        # Cek apakah secret "gcp_service_account" ada di Streamlit Cloud
+        if "gcp_service_account" not in st.secrets:
+            st.error("GAGAL: Secret 'gcp_service_account' tidak ditemukan.")
+            st.info("Pastikan Anda sudah menyalin-tempel kredensial dengan benar di Pengaturan Aplikasi Streamlit (Settings > Secrets).")
+            # Tampilkan semua kunci secret yang ada untuk debugging
+            st.write("Kunci secret yang terdeteksi:", list(st.secrets.keys()))
+            st.stop()
 
-    query_subfolders = (
-        f"'{data_mentah_folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    )
+        creds_dict = st.secrets["gcp_service_account"]
+        
+        # Cek apakah isi secret adalah dictionary yang valid
+        if not isinstance(creds_dict, dict):
+            st.error("GAGAL: Format secret 'gcp_service_account' salah.")
+            st.info("Isinya harus berupa format TOML yang benar, bukan string biasa. Harap periksa kembali format yang Anda tempelkan.")
+            st.stop()
 
-    @with_retry
-    def _list_subfolders():
-        return _drive_service.files().list(
-            q=query_subfolders,
-            fields="files(id, name)",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True
-        ).execute()
+        creds = Credentials.from_service_account_info(
+            creds_dict,
+            scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive",
+            ],
+        )
+        drive_service = build("drive", "v3", credentials=creds)
+        gsheets_service = gspread.authorize(creds)
+        return drive_service, gsheets_service
 
-    results = _list_subfolders()
-    subfolders = results.get("files", [])
+    except Exception as e:
+        st.error("Terjadi galat kritis saat otentikasi ke Google API.")
+        st.error(f"Detail Galat: {e}")
+        st.info("Ini bisa disebabkan oleh format kredensial yang salah atau masalah koneksi. Silakan periksa kembali file 'secrets' Anda.")
+        st.stop()
 
-    if not subfolders:
-        st.warning("Tidak ada subfolder (toko) yang ditemukan di dalam folder data mentah.")
-        return pd.DataFrame()
-
-    progress_bar = st.progress(0, text="Membaca data...")
-    date_regex = re.compile(r"(\d{4}[-_]\d{2}[-_]\d{2})")
-
-    for i, folder in enumerate(subfolders):
-        progress_text = f"Membaca folder toko: {folder['name']}..."
-        progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
-
-        # Kueri ini mengambil SEMUA file, agar kita bisa memfilter secara manual
-        file_query = f"'{folder['id']}' in parents and trashed = false"
-
-        @with_retry
-        def _list_files():
-            return _drive_service.files().list(
-                q=file_query,
-                fields="files(id, name, mimeType)",
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True
-            ).execute()
-
-        files_in_folder = _list_files().get("files", [])
-
-        for file_item in files_in_folder:
-            file_id = file_item.get("id")
-            file_name = file_item.get("name")
-            mime_type = file_item.get("mimeType")
-            content = None
-
-            try:
-                # --- PERBAIKAN KUNCI ---
-                # Logika baru untuk menangani tipe file secara eksplisit
-                if mime_type == 'application/vnd.google-apps.spreadsheet':
-                    # Ekspor Google Sheet ke CSV
-                    request = _drive_service.files().export_media(fileId=file_id, mimeType="text/csv", supportsAllDrives=True)
-                    content = io.BytesIO(request.execute())
-                elif mime_type == 'text/csv':
-                    # Unduh file CSV biasa
-                    request = _drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
-                    buf = io.BytesIO()
-                    downloader = MediaIoBaseDownload(buf, request)
-                    done = False
-                    while not done:
-                        _, done = downloader.next_chunk()
-                    content = buf
-                else:
-                    # Lewati file yang tidak didukung (misal: Google Docs, gambar, dll.)
-                    st.warning(f"File '{file_name}' di folder '{folder['name']}' dilewati karena tipe file ({mime_type}) tidak didukung.")
-                    continue
-
-                if content is None or content.getbuffer().nbytes == 0:
-                    st.warning(f"FILE KOSONG: '{file_name}' di folder '{folder['name']}' dilewati.")
-                    continue
-
-                # Lanjutan proses sama seperti sebelumnya...
-                df = read_csv_safely(content)
-
-                rename_map_variants = {
-                    "Nama Produk": NAMA_PRODUK_COL, "Nama": NAMA_PRODUK_COL, "nama": NAMA_PRODUK_COL,
-                    "nama_produk": NAMA_PRODUK_COL, "HARGA": HARGA_COL, "Harga": HARGA_COL, "harga": HARGA_COL,
-                    "Terjual/BLN": TERJUAL_COL, "Terjual/Bln": TERJUAL_COL, "Terjual per Bulan": TERJUAL_COL,
-                    "Terjual per bulan": TERJUAL_COL, "terjual/bln": TERJUAL_COL, "Link": LINK_COL,
-                }
-                df.rename(columns=lambda c: rename_map_variants.get(str(c).strip(), str(c).strip()), inplace=True)
-
-                df[TOKO_COL] = folder["name"]
-                m = date_regex.search(file_name)
-                df[TANGGAL_COL] = pd.to_datetime(m.group(1).replace("_", "-"), errors="coerce") if m else pd.NaT
-
-                low_name = str(file_name).lower()
-                if "ready" in low_name:
-                    df[STATUS_COL] = "Tersedia"
-                elif "habis" in low_name:
-                    df[STATUS_COL] = "Habis"
-                else:
-                    df[STATUS_COL] = "N/A"
-
-                missing = REQUIRED_COLUMNS - set(df.columns)
-                if missing:
-                    st.warning(f"Lewati file '{file_name}' di '{folder['name']}' karena kolom wajib hilang: {sorted(missing)}")
-                    continue
-
-                all_data.append(df)
-            except Exception as file_error:
-                st.error(f"GAGAL BACA FILE: Error saat memproses '{file_name}' di folder '{folder['name']}'.")
-                st.error(f"Detail: {file_error}")
-                st.info("File dilewati. Lanjut memproses file lain.")
-                continue
-
-    progress_bar.empty()
-
-    if not all_data:
-        st.warning("Tidak ada data valid yang ditemukan di semua folder toko.")
-        return pd.DataFrame()
-
-    return pd.concat(all_data, ignore_index=True)
 
 # --- Fungsi untuk Manajemen Folder di Google Drive ---
 @st.cache_data(show_spinner="Mencari ID folder di Google Drive...")
@@ -295,17 +214,13 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
         return pd.DataFrame()
 
     progress_bar = st.progress(0, text="Membaca data...")
-
-    # pola tanggal yang diterima: YYYY-MM-DD atau YYYY_MM_DD
     date_regex = re.compile(r"(\d{4}[-_]\d{2}[-_]\d{2})")
 
     for i, folder in enumerate(subfolders):
         progress_text = f"Membaca folder toko: {folder['name']}..."
         progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
 
-        file_query = (
-            f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet') and trashed = false"
-        )
+        file_query = f"'{folder['id']}' in parents and trashed = false"
 
         @with_retry
         def _list_files():
@@ -322,55 +237,41 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
             file_id = file_item.get("id")
             file_name = file_item.get("name")
             mime_type = file_item.get("mimeType")
+            content = None
 
             try:
-                # Unduh (konversi GSheet -> CSV jika perlu)
-                if mime_type == "application/vnd.google-apps.spreadsheet":
+                if mime_type == 'application/vnd.google-apps.spreadsheet':
                     request = _drive_service.files().export_media(fileId=file_id, mimeType="text/csv", supportsAllDrives=True)
                     content = io.BytesIO(request.execute())
-                else:
+                elif mime_type == 'text/csv':
                     request = _drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
                     buf = io.BytesIO()
                     downloader = MediaIoBaseDownload(buf, request)
                     done = False
                     while not done:
-                        status, done = downloader.next_chunk()
+                        _, done = downloader.next_chunk()
                     content = buf
+                else:
+                    st.warning(f"File '{file_name}' di folder '{folder['name']}' dilewati karena tipe file ({mime_type}) tidak didukung.")
+                    continue
 
-                if content.getbuffer().nbytes == 0:
+                if content is None or content.getbuffer().nbytes == 0:
                     st.warning(f"FILE KOSONG: '{file_name}' di folder '{folder['name']}' dilewati.")
                     continue
 
-                # Baca CSV dengan strategi multi-encoding/multi-separator
                 df = read_csv_safely(content)
 
-                # Normalisasi kolom yang umum salah ketik / variasi nama
                 rename_map_variants = {
-                    "Nama Produk": NAMA_PRODUK_COL,
-                    "Nama": NAMA_PRODUK_COL,
-                    "nama": NAMA_PRODUK_COL,
-                    "nama_produk": NAMA_PRODUK_COL,
-                    "HARGA": HARGA_COL,
-                    "Harga": HARGA_COL,
-                    "harga": HARGA_COL,
-                    "Terjual/BLN": TERJUAL_COL,
-                    "Terjual/Bln": TERJUAL_COL,
-                    "Terjual per Bulan": TERJUAL_COL,
-                    "Terjual per bulan": TERJUAL_COL,
-                    "terjual/bln": TERJUAL_COL,
-                    "Link": LINK_COL,
+                    "Nama Produk": NAMA_PRODUK_COL, "Nama": NAMA_PRODUK_COL, "nama": NAMA_PRODUK_COL,
+                    "nama_produk": NAMA_PRODUK_COL, "HARGA": HARGA_COL, "Harga": HARGA_COL, "harga": HARGA_COL,
+                    "Terjual/BLN": TERJUAL_COL, "Terjual/Bln": TERJUAL_COL, "Terjual per Bulan": TERJUAL_COL,
+                    "Terjual per bulan": TERJUAL_COL, "terjual/bln": TERJUAL_COL, "Link": LINK_COL,
                 }
                 df.rename(columns=lambda c: rename_map_variants.get(str(c).strip(), str(c).strip()), inplace=True)
 
-                # Tambahkan informasi dari folder & file
                 df[TOKO_COL] = folder["name"]
                 m = date_regex.search(file_name)
-                if m:
-                    # normalisasi '_' menjadi '-'
-                    date_str = m.group(1).replace("_", "-")
-                    df[TANGGAL_COL] = pd.to_datetime(date_str, errors="coerce")
-                else:
-                    df[TANGGAL_COL] = pd.NaT
+                df[TANGGAL_COL] = pd.to_datetime(m.group(1).replace("_", "-"), errors="coerce") if m else pd.NaT
 
                 low_name = str(file_name).lower()
                 if "ready" in low_name:
@@ -380,19 +281,14 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
                 else:
                     df[STATUS_COL] = "N/A"
 
-                # Validasi kolom minimum
                 missing = REQUIRED_COLUMNS - set(df.columns)
                 if missing:
-                    st.warning(
-                        f"Lewati file '{file_name}' di '{folder['name']}' karena kolom wajib hilang: {sorted(missing)}"
-                    )
+                    st.warning(f"Lewati file '{file_name}' di '{folder['name']}' karena kolom wajib hilang: {sorted(missing)}")
                     continue
 
                 all_data.append(df)
             except Exception as file_error:
-                st.error(
-                    f"GAGAL BACA FILE: Error saat memproses '{file_name}' di folder '{folder['name']}'."
-                )
+                st.error(f"GAGAL BACA FILE: Error saat memproses '{file_name}' di folder '{folder['name']}'.")
                 st.error(f"Detail: {file_error}")
                 st.info("File dilewati. Lanjut memproses file lain.")
                 continue
@@ -403,8 +299,7 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
         st.warning("Tidak ada data valid yang ditemukan di semua folder toko.")
         return pd.DataFrame()
 
-    final_df = pd.concat(all_data, ignore_index=True)
-    return final_df
+    return pd.concat(all_data, ignore_index=True)
 
 
 # --- Fungsi-fungsi Pemrosesan Data (Labeling, Cleaning, dll.) ---
@@ -1292,47 +1187,78 @@ if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
                 # Gerbang Kualitas Data
                 unknown_brands_count = (processed_df[BRAND_COL] == "TIDAK DIKETAHUI").sum()
 
-                if unknown_brands_count > 0:
-                    st.session_state.df_to_fix = processed_df
-                    st.session_state.mode = "correction"
-                else:
-                    save_data_to_cache(drive_service, data_olahan_folder_id, CACHE_FILE_NAME, processed_df)
-                    st.session_state.master_df = processed_df
-                    st.session_state.mode = "dashboard"
+                if unknown_brands_count > <strong>Tentu, Mas Firman. Saya akan bantu analisis dan perbaiki masalah pada skrip Anda.</strong>
 
-    # st.rerun() # <-- PERBAIKAN: Baris ini dinonaktifkan untuk mencegah loop
+Error yang Anda alami, **"⚠️ Folder target bukan Shared Drive"**, muncul karena skrip Anda secara spesifik memeriksa apakah folder `processed_data` memiliki `driveId`. Properti `driveId` ini hanya ada pada folder yang merupakan bagian dari Google Shared Drive (Drive Bersama). Jika `driveId` tidak ditemukan, skrip akan berhenti, sesuai dengan logika yang Anda buat di fungsi `save_data_to_cache`.
 
-# --- Logika Tampilan Berdasarkan Mode Aplikasi ---
-if st.session_state.mode == "initial":
-    st.info("👈 Klik **'Tarik & Proses Data Terbaru'** di sidebar untuk memulai.")
-    st.markdown("---")
-    st.subheader("Struktur Folder yang Diharapkan di Google Drive:")
-    st.code(
-        f"""
-STREAMLIT_ANALISIS_PENJUALAN/ (ID: {PARENT_FOLDER_ID})
-|
-|-- 📂 {DATA_MENTAH_FOLDER_NAME}/
-|   |-- 📂 NAMA_TOKO_1/
-|   |   |-- 📜 2025-08-12-ready.csv
-|   |   `-- ...
-|   `-- 📂 NAMA_TOKO_2/
-|
-|-- 📂 {DATA_OLAHAN_FOLDER_NAME}/
-|   `-- (Folder ini akan diisi otomatis oleh aplikasi)
-|
-`-- 📜 (File Google Sheet 'Otak' Anda)
-        """,
-        language="text",
-    )
-elif st.session_state.mode == "correction":
-    display_correction_mode(st.session_state.gsheets_service)
-elif st.session_state.mode == "dashboard":
-    if not st.session_state.master_df.empty:
-        display_main_dashboard(st.session_state.master_df)
+Meskipun Anda sudah meletakkan folder di dalam Shared Drive, ada dua kemungkinan penyebab masalah:
+1.  **Pendeteksian `driveId` Gagal**: Terkadang, cara folder dibuat atau dipindahkan ke Shared Drive bisa menyebabkan API tidak langsung mengenali `driveId`-nya.
+2.  **Kesalahan pada Logika *Update***: Ada sedikit kekurangan pada fungsi `update` di skrip Anda. Saat memperbarui file yang sudah ada di Shared Drive, Anda juga perlu menyertakan `driveId` sebagai parameter, tidak hanya saat membuat file baru.
+
+### **Solusi: Perbaikan Fungsi `save_data_to_cache`**
+
+Untuk mengatasi ini, kita perlu memodifikasi fungsi `save_data_to_cache` agar lebih tangguh dan secara eksplisit menyertakan `driveId` baik saat membuat file baru maupun saat memperbaruinya.
+
+Silakan ganti seluruh fungsi `save_data_to_cache` di skrip Anda dengan versi yang sudah diperbaiki di bawah ini:
+
+```python
+def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFrame):
+    buffer = io.BytesIO()
+    df_to_save.to_parquet(buffer, index=False)
+    buffer.seek(0)
+
+    # Deteksi driveId untuk memastikan file tersimpan di Shared Drive
+    try:
+        folder_info = drive_service.files().get(
+            fileId=folder_id,
+            fields="id, name, driveId",
+            supportsAllDrives=True
+        ).execute()
+        drive_id = folder_info.get("driveId")
+        if not drive_id:
+            st.error(f"⚠️ Folder target '{folder_info.get('name')}' (ID: {folder_id}) bukan bagian dari Shared Drive. Operasi penyimpanan cache dibatalkan.")
+            st.info("Pastikan folder 'processed_data' dibuat langsung di dalam Shared Drive, bukan dipindahkan dari 'My Drive'.")
+            st.stop()
+    except Exception as e:
+        st.error(f"Gagal mendapatkan informasi folder dari Google Drive. Error: {e}")
+        st.stop()
+
+    existing_files = check_cache_exists(drive_service, folder_id, filename)
+    generic_mimetype = "application/octet-stream"
+    media_body = MediaIoBaseUpload(buffer, mimetype=generic_mimetype, resumable=True)
+
+    if existing_files:
+        file_id = existing_files[0]["id"]
+        try:
+            # --- PERBAIKAN KUNCI ---
+            # Menambahkan parameter 'driveId' pada saat update
+            drive_service.files().update(
+                fileId=file_id,
+                media_body=media_body,
+                supportsAllDrives=True,
+                driveId=drive_id,  # <-- Tambahan penting
+                addParents=folder_id # <-- Menjaga file tetap di folder yang benar
+            ).execute()
+            st.toast(f"Cache '{filename}' berhasil diperbarui di Shared Drive.", icon="🔄")
+        except Exception as e:
+            st.error(f"Gagal memperbarui cache di Shared Drive. Error: {e}")
+            st.stop()
     else:
-        st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
-        st.session_state.mode = "initial"
-        st.rerun()
-
-
-
+        # Metadata untuk file baru (sudah benar, tapi kita pastikan lagi)
+        file_metadata = {
+            "name": filename,
+            "parents": [folder_id],
+            "mimeType": generic_mimetype,
+            "driveId": drive_id
+        }
+        try:
+            drive_service.files().create(
+                body=file_metadata,
+                media_body=media_body,
+                fields="id",
+                supportsAllDrives=True
+            ).execute()
+            st.toast(f"Cache '{filename}' berhasil dibuat di Shared Drive.", icon="✅")
+        except Exception as e:
+            st.error(f"Gagal membuat cache baru di Shared Drive. Error: {e}")
+            st.stop()
