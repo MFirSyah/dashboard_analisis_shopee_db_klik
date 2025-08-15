@@ -595,9 +595,9 @@ def display_correction_mode(gsheets_service):
     with st.expander("🔎 Sumber Database & Kamus (klik untuk lihat)"):
         st.markdown(
             f"""
-            - **Spreadsheet 'Otak' ID**: `{SPREADSHEET_ID}`  
-            - **Sheet Database Brand**: `{DB_SHEET_NAME}`  
-            - **Sheet Kamus Alias Brand**: `{KAMUS_SHEET_NAME}`  
+            - **Spreadsheet 'Otak' ID**: `{SPREADSHEET_ID}`
+            - **Sheet Database Brand**: `{DB_SHEET_NAME}`
+            - **Sheet Kamus Alias Brand**: `{KAMUS_SHEET_NAME}`
             - **Buka Spreadsheet**: [Klik di sini](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)
             """
         )
@@ -1194,7 +1194,7 @@ if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
                     st.session_state.master_df = processed_df
                     st.session_state.mode = "dashboard"
 
-    st.rerun()
+    # st.rerun() # <-- PERBAIKAN: Baris ini dinonaktifkan untuk mencegah loop
 
 # --- Logika Tampilan Berdasarkan Mode Aplikasi ---
 if st.session_state.mode == "initial":
@@ -1227,4 +1227,3 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
-
