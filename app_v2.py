@@ -34,15 +34,14 @@ st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.2 (Batch Cor
 # =====================================================================================
 # BLOK KONFIGURASI UTAMA
 # =====================================================================================
-# --- ID & Nama Aset Google Drive ---
-# --- Perbaikan yang Benar ---
-PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" # Ini sudah benar, berisi ID
+# --- ID Folder Google Drive ---
+# ID folder induk "STREAMLIT_ANALISIS_PENJUALAN"
+PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq"
 
-# Ubah ini menjadi NAMA folder, bukan ID
-DATA_MENTAH_FOLDER_NAME = "data_upload" # <-- Ganti dengan nama folder data mentah Anda
-DATA_OLAHAN_FOLDER_NAME = "processed_data" # <-- Ganti dengan nama folder data olahan Anda
+# NAMA folder, BUKAN ID-nya.
+DATA_MENTAH_FOLDER_NAME = "data_upload"
+DATA_OLAHAN_FOLDER_NAME = "processed_data"
 
-CACHE_FILE_NAME = "master_data.parquet"
 CACHE_FILE_NAME = "master_data.parquet"
 
 # --- ID Google Sheet "Otak" ---
@@ -51,7 +50,7 @@ DB_SHEET_NAME = "database_brand"
 KAMUS_SHEET_NAME = "kamus_brand"
 KATEGORI_SHEET_NAME = "DATABASE"
 
-# --- Nama Kolom Konsisten ---
+# --- Nama Kolom Konsisten (tidak perlu diubah) ---
 NAMA_PRODUK_COL = "Nama Produk"
 HARGA_COL = "Harga"
 TERJUAL_COL = "Terjual per bulan"
@@ -1183,6 +1182,7 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
+
 
 
 
