@@ -473,44 +473,61 @@ def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFr
     df_to_save.to_parquet(buffer, index=False)
     buffer.seek(0)
 
-    # ✅ Deteksi driveId untuk memastikan file tersimpan di Shared Drive
-    folder_info = drive_service.files().get(
-        fileId=folder_id,
-        fields="id, name, driveId",
-        supportsAllDrives=True
-    ).execute()
-    drive_id = folder_info.get("driveId")
-    if not drive_id:
-        st.error("⚠️ Folder target bukan Shared Drive. Pindahkan folder ke Shared Drive atau bagikan sebagai editor.")
+    # Deteksi driveId untuk memastikan file tersimpan di Shared Drive
+    try:
+        folder_info = drive_service.files().get(
+            fileId=folder_id,
+            fields="id, name, driveId",
+            supportsAllDrives=True
+        ).execute()
+        drive_id = folder_info.get("driveId")
+        if not drive_id:
+            st.error(f"⚠️ Folder target '{folder_info.get('name')}' (ID: {folder_id}) bukan bagian dari Shared Drive. Operasi penyimpanan cache dibatalkan.")
+            st.info("Pastikan folder 'processed_data' dibuat langsung di dalam Shared Drive, bukan dipindahkan dari 'My Drive'.")
+            st.stop()
+    except Exception as e:
+        st.error(f"Gagal mendapatkan informasi folder dari Google Drive. Error: {e}")
         st.stop()
 
     existing_files = check_cache_exists(drive_service, folder_id, filename)
     generic_mimetype = "application/octet-stream"
     media_body = MediaIoBaseUpload(buffer, mimetype=generic_mimetype, resumable=True)
 
-    file_metadata = {
-        "name": filename,
-        "parents": [folder_id],
-        "mimeType": generic_mimetype,
-        "driveId": drive_id
-    }
-
     if existing_files:
         file_id = existing_files[0]["id"]
-        drive_service.files().update(
-            fileId=file_id,
-            media_body=media_body,
-            supportsAllDrives=True
-        ).execute()
-        st.toast(f"Cache '{filename}' diperbarui di Shared Drive.", icon="🔄")
+        try:
+            # --- PERBAIKAN KUNCI ---
+            # Menambahkan parameter 'driveId' pada saat update
+            drive_service.files().update(
+                fileId=file_id,
+                media_body=media_body,
+                supportsAllDrives=True,
+                driveId=drive_id,  # <-- Tambahan penting
+                addParents=folder_id # <-- Menjaga file tetap di folder yang benar
+            ).execute()
+            st.toast(f"Cache '{filename}' berhasil diperbarui di Shared Drive.", icon="🔄")
+        except Exception as e:
+            st.error(f"Gagal memperbarui cache di Shared Drive. Error: {e}")
+            st.stop()
     else:
-        drive_service.files().create(
-            body=file_metadata,
-            media_body=media_body,
-            fields="id",
-            supportsAllDrives=True
-        ).execute()
-        st.toast(f"Cache '{filename}' dibuat di Shared Drive.", icon="✅")
+        # Metadata untuk file baru (sudah benar, tapi kita pastikan lagi)
+        file_metadata = {
+            "name": filename,
+            "parents": [folder_id],
+            "mimeType": generic_mimetype,
+            "driveId": drive_id
+        }
+        try:
+            drive_service.files().create(
+                body=file_metadata,
+                media_body=media_body,
+                fields="id",
+                supportsAllDrives=True
+            ).execute()
+            st.toast(f"Cache '{filename}' berhasil dibuat di Shared Drive.", icon="✅")
+        except Exception as e:
+            st.error(f"Gagal membuat cache baru di Shared Drive. Error: {e}")
+            st.stop()
 
 
 # --- Fungsi Bantuan untuk UI ---
@@ -1210,3 +1227,4 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
+
