@@ -28,11 +28,11 @@ st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.4 (Final)")
 # =====================================================================================
 # BLOK KONFIGURASI UTAMA
 # =====================================================================================
-PARENT_FOLDER_ID = "12Lpj2FtaXdtHmpPCHTKfLaLjAziuulcb"
+PARENT_FOLDER_ID = "182t10RUqAhb5ZGMd_Ld9oDXlCh_9x0CU"
 DATA_MENTAH_FOLDER_NAME = "data_upload"
 DATA_OLAHAN_FOLDER_NAME = "processed_data"
 CACHE_FILE_NAME = "master_data.parquet"
-SPREADSHEET_ID = "1iX-LpYJrHRqD5-c2-D27kVY7PArYLaSCCd-nvd2y6Yg"
+SPREADSHEET_ID = "1h3eUp_6t9RXtO_Q_mgCaDiwhOBBhbRBNejVyiFEIx0g"
 DB_SHEET_NAME = "database_brand"
 KAMUS_SHEET_NAME = "kamus_brand"
 KATEGORI_SHEET_NAME = "DATABASE"
@@ -1227,4 +1227,5 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
+
 
