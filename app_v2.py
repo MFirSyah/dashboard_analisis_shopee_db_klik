@@ -36,8 +36,8 @@ st.set_page_config(layout="wide", page_title="Dashboard Analisis v3.2 (Batch Cor
 # =====================================================================================
 # --- ID & Nama Aset Google Drive ---
 PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq"
-DATA_MENTAH_FOLDER_NAME = "data_upload"
-DATA_OLAHAN_FOLDER_NAME = "processed_data"
+DATA_MENTAH_FOLDER_NAME = "1vOAqYvfOIYHFIwbOJTNiNMys_xjc2Q4r"
+DATA_OLAHAN_FOLDER_NAME = "18RhE-XYW-ZLjl0TrkfIVfIvZ8u48ENRN"
 CACHE_FILE_NAME = "master_data.parquet"
 
 # --- ID Google Sheet "Otak" ---
@@ -1178,3 +1178,4 @@ elif st.session_state.mode == "dashboard":
         st.error("Terjadi kesalahan, data master tidak berhasil dimuat.")
         st.session_state.mode = "initial"
         st.rerun()
+
