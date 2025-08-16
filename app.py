@@ -139,11 +139,32 @@ def load_data_from_cache(drive_service, file_id):
     return pd.read_parquet(fh)
 
 def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFrame):
-    """Menyimpan DataFrame ke Google Drive sebagai file parquet."""
+    """Menyimpan DataFrame ke Google Drive sebagai file parquet.
+    VERSI BARU: Dengan konversi tipe data yang aman untuk mencegah ArrowTypeError.
+    """
     st.write("Menyimpan data olahan ke cache cerdas di Google Drive...")
     
+    # Salin DataFrame agar data asli tidak berubah
+    df_safe = df_to_save.copy()
+
+    # Blok penyelamat untuk standarisasi tipe data sebelum menyimpan
+    # 1. Ubah kolom Tanggal menjadi format string YYYY-MM-DD yang pasti aman.
+    if TANGGAL_COL in df_safe.columns:
+        # Pastikan kolom tanggal adalah tipe datetime sebelum menggunakan .dt
+        if pd.api.types.is_datetime64_any_dtype(df_safe[TANGGAL_COL]):
+            df_safe[TANGGAL_COL] = df_safe[TANGGAL_COL].dt.strftime('%Y-%m-%d')
+        else:
+            # Jika bukan datetime (misal, sudah jadi string), coba konversi dulu
+            df_safe[TANGGAL_COL] = pd.to_datetime(df_safe[TANGGAL_COL], errors='coerce').dt.strftime('%Y-%m-%d')
+
+
+    # 2. Pastikan semua kolom 'object' (yang biasanya string) benar-benar string.
+    for col in df_safe.select_dtypes(include=['object']).columns:
+        df_safe[col] = df_safe[col].astype(str)
+
+    # Ubah DataFrame yang sudah aman menjadi format parquet di dalam memori
     buffer = io.BytesIO()
-    df_to_save.to_parquet(buffer, index=False)
+    df_safe.to_parquet(buffer, index=False)
     buffer.seek(0)
 
     media_body = MediaIoBaseUpload(buffer, mimetype="application/octet-stream", resumable=True)
