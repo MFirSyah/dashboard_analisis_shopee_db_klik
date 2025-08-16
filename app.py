@@ -120,6 +120,62 @@ def read_csv_safely(byte_stream: io.BytesIO) -> pd.DataFrame:
     # Jika semua kombinasi gagal, coba cara standar Pandas sebagai usaha terakhir
     return pd.read_csv(io.BytesIO(raw_bytes))
 
+def check_cache_exists(drive_service, folder_id, filename):
+    """Mengecek apakah file cache sudah ada di Google Drive."""
+    query = f"'{folder_id}' in parents and name = '{filename}' and trashed = false"
+    response = drive_service.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+    return response.get("files", [])
+
+def load_data_from_cache(drive_service, file_id):
+    """Mengunduh file cache (parquet) dari Google Drive dan memuatnya sebagai DataFrame."""
+    st.toast("Memuat data dari cache cerdas...", icon="⚡")
+    request = drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    fh.seek(0)
+    return pd.read_parquet(fh)
+
+def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFrame):
+    """Menyimpan DataFrame ke Google Drive sebagai file parquet."""
+    st.write("Menyimpan data olahan ke cache cerdas di Google Drive...")
+    
+    buffer = io.BytesIO()
+    df_to_save.to_parquet(buffer, index=False)
+    buffer.seek(0)
+
+    media_body = MediaIoBaseUpload(buffer, mimetype="application/octet-stream", resumable=True)
+
+    existing_files = check_cache_exists(drive_service, folder_id, filename)
+
+    try:
+        if existing_files:
+            # Jika file sudah ada, lakukan UPDATE
+            file_id = existing_files[0]["id"]
+            drive_service.files().update(
+                fileId=file_id,
+                media_body=media_body,
+                supportsAllDrives=True
+            ).execute()
+            st.toast(f"Cache '{filename}' berhasil diperbarui.", icon="🔄")
+        else:
+            # Jika file belum ada, lakukan CREATE
+            file_metadata = {
+                "name": filename,
+                "parents": [folder_id]
+            }
+            drive_service.files().create(
+                body=file_metadata,
+                media_body=media_body,
+                supportsAllDrives=True
+            ).execute()
+            st.toast(f"Cache '{filename}' berhasil dibuat.", icon="✅")
+    except Exception as e:
+        st.error(f"Gagal menyimpan cache ke Google Drive. Error: {e}")
+        st.stop()
+
 # =====================================================================================
 # Bagian 3: Fungsi-fungsi Inti (Backend)
 # Kumpulan fungsi utama untuk otentikasi, navigasi Drive, dan pengambilan data.
@@ -769,6 +825,3 @@ elif st.session_state.mode == "dashboard":
     else:
         st.error("Gagal memuat data master. Silakan coba tarik data kembali.")
         st.session_state.mode = "initial"
-        
-
-
