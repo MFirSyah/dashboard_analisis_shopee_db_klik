@@ -381,34 +381,52 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
 # Di sinilah data mentah dibersihkan, diperkaya, dan diberi label (brand & kategori).
 # =====================================================================================
 
-def process_raw_data(raw_df: pd.DataFrame, brand_db: List[str], kamus_brand: Dict[str, str], db_kategori: pd.DataFrame):
+# (Ganti fungsi lama Anda di Bagian 4 dengan yang ini)
+
+def process_raw_data(raw_df: pd.DataFrame, brand_db: List[str], kamus_brand: Dict[str, str], db_kategori: pd.DataFrame, placeholder):
     """
     Orkestrator utama untuk membersihkan, memperkaya, dan melabeli data mentah.
+    VERSI BARU: Menampilkan preview data selama proses berlangsung.
     """
     if raw_df.empty:
         return raw_df
 
     df = raw_df.copy()
-    st.write("Memulai pembersihan dan standarisasi data...")
-
-    # 1. Konversi tipe data yang aman, mengisi nilai kosong dengan 0
+    
+    # Tahap 1: Pembersihan Awal & Perhitungan Omzet
+    placeholder.info("⚙️ Membersihkan data dan menghitung Omzet...")
     df[HARGA_COL] = pd.to_numeric(df.get(HARGA_COL), errors="coerce").fillna(0)
     df[TERJUAL_COL] = pd.to_numeric(df.get(TERJUAL_COL), errors="coerce").fillna(0).astype(int)
-
-    # 2. Hitung Omzet
     df[OMZET_COL] = df[HARGA_COL] * df[TERJUAL_COL]
+    
+    # Tampilkan preview pertama
+    with placeholder.container():
+        st.info("⚙️ Data setelah dibersihkan dan Omzet dihitung:")
+        st.dataframe(df.head(), use_container_width=True)
+    time.sleep(2) # Beri jeda agar pengguna sempat melihat
 
-    # 3. Labeling Brand (dengan optimasi cache internal)
-    st.write("Memulai proses labeling brand...")
+    # Tahap 2: Labeling Brand
+    placeholder.info("🏷️ Memulai proses labeling brand...")
     df = label_brands(df, brand_db, kamus_brand)
+    
+    # Tampilkan preview kedua dengan kolom BRAND
+    with placeholder.container():
+        st.info("🏷️ Data setelah labeling brand selesai:")
+        st.dataframe(df.head(), use_container_width=True)
+    time.sleep(2)
 
-    # 4. Pemetaan Kategori
-    st.write("Memulai proses pemetaan kategori...")
+    # Tahap 3: Pemetaan Kategori
+    placeholder.info("🗂️ Memulai proses pemetaan kategori...")
     df = map_categories(df, db_kategori)
+    
+    # Tampilkan preview ketiga dengan kolom KATEGORI
+    with placeholder.container():
+        st.info("🗂️ Data setelah pemetaan kategori selesai:")
+        st.dataframe(df.head(), use_container_width=True)
+    time.sleep(2)
 
     st.success("Semua proses pengolahan data selesai!")
     return df
-
 
 def label_brands(df: pd.DataFrame, brand_db: List[str], kamus_brand: Dict[str, str], fuzzy_threshold: int = 88):
     """
@@ -761,6 +779,10 @@ st.sidebar.info(
     "Proses akan sangat cepat jika cache cerdas sudah ada di Google Drive."
 )
 if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
+    
+    # BARU: Buat sebuah placeholder kosong ("papan tulis") di awal proses
+    status_placeholder = st.empty()
+
     with st.spinner("Memulai proses... Menghubungkan ke Google API..."):
         # Langkah 1: Otentikasi dan siapkan koneksi
         drive_service, gsheets_service = get_google_apis()
@@ -800,8 +822,8 @@ if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
             st.warning("Tidak ada data mentah valid yang bisa diproses.")
             st.session_state.mode = "initial"
         else:
-            # Olah data mentah menjadi data bersih
-            processed_df = process_raw_data(raw_df, brand_db, kamus_brand, db_kategori)
+            # MODIFIKASI: Kirim 'status_placeholder' ke dalam fungsi process_raw_data
+            processed_df = process_raw_data(raw_df, brand_db, kamus_brand, db_kategori, status_placeholder)
 
             # GERBANG KUALITAS DATA: Cek apakah ada brand yang tidak dikenali
             unknown_brands_count = (processed_df[BRAND_COL] == "TIDAK DIKETAHUI").sum()
@@ -818,9 +840,11 @@ if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
                 st.session_state.master_df = processed_df
                 st.session_state.mode = "dashboard"
 
+    # BARU: Setelah semua proses selesai, bersihkan "papan tulis"
+    status_placeholder.empty()
+    
     # Langkah 5: Jalankan ulang skrip untuk menampilkan UI yang sesuai
     st.rerun()
-
 
 # --- Logika Tampilan Berdasarkan Mode Aplikasi (Saklar Utama) ---
 st.divider()
