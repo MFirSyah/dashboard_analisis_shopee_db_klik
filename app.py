@@ -67,28 +67,30 @@ REQUIRED_COLUMNS = {NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL}
 # Kumpulan fungsi kecil untuk membuat aplikasi lebih tangguh dan pintar.
 # =====================================================================================
 
-def with_retry(fn: Callable, max_attempts: int = 4, base_delay: float = 1.0, exc_types: Tuple = (Exception,),
-            fail_msg: Optional[str] = None):
+# GANTI DENGAN FUNGSI BARU INI di Bagian 2
+
+def with_retry(max_attempts: int = 4, base_delay: float = 1.0, exc_types: Tuple = (Exception,),
+               fail_msg: Optional[str] = None):
     """
     Decorator untuk mencoba ulang sebuah fungsi jika gagal.
-    Sangat berguna untuk operasi jaringan (API calls) yang bisa gagal sesaat.
+    Versi ini dirancang untuk bisa menerima argumen (misal: fail_msg).
     """
-    def wrapper(*args, **kwargs):
-        for attempt in range(1, max_attempts + 1):
-            try:
-                # Mencoba menjalankan fungsi aslinya
-                return fn(*args, **kwargs)
-            except exc_types as e:
-                # Jika gagal dan ini adalah percobaan terakhir, tampilkan error dan hentikan
-                if attempt == max_attempts:
-                    if fail_msg:
-                        st.error(f"{fail_msg}: {e}")
-                    raise
-                # Jika bukan percobaan terakhir, tunggu sejenak sebelum mencoba lagi
-                # Waktu tunggu akan semakin lama setiap kali gagal (1s, 2s, 3s, ...)
-                time.sleep(base_delay * attempt)
-    return wrapper
-
+    def decorator(fn: Callable):
+        def wrapper(*args, **kwargs):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    # Mencoba menjalankan fungsi aslinya
+                    return fn(*args, **kwargs)
+                except exc_types as e:
+                    # Jika gagal dan ini adalah percobaan terakhir, tampilkan error dan hentikan
+                    if attempt == max_attempts:
+                        if fail_msg:
+                            st.error(f"{fail_msg}: {e}")
+                        raise
+                    # Jika bukan percobaan terakhir, tunggu sejenak sebelum mencoba lagi
+                    time.sleep(base_delay * attempt)
+        return wrapper
+    return decorator
 # Daftar format encoding dan pemisah (separator) yang umum untuk file CSV
 CSV_POSSIBLE_ENCODINGS = ["utf-8", "utf-8-sig", "latin1", "iso-8859-1"]
 CSV_POSSIBLE_SEPARATORS = [",", ";", "\t", "|"]
@@ -768,3 +770,4 @@ elif st.session_state.mode == "dashboard":
         st.error("Gagal memuat data master. Silakan coba tarik data kembali.")
         st.session_state.mode = "initial"
         
+
