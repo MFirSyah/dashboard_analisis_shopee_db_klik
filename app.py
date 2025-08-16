@@ -32,7 +32,7 @@ st.set_page_config(
 
 # --- ID Google Drive & Sheets ---
 # ID Folder Induk tempat semua folder proyek berada
-PARENT_FOLDER_ID = "1z0Ex2Mjw0pCWt6BwdV1OhGLB8TJ9EPWq" 
+PARENT_FOLDER_ID = "1rnx2fExmZi_AcldKvWb6_xv0ipj4WRbZ" 
 # Nama folder tempat Anda mengunggah data mentah (CSV dari toko-toko)
 DATA_MENTAH_FOLDER_NAME = "data_upload"
 # Nama folder tempat aplikasi akan menyimpan data olahan (cache parquet)
@@ -40,7 +40,7 @@ DATA_OLAHAN_FOLDER_NAME = "processed_data"
 # Nama file untuk cache data olahan
 CACHE_FILE_NAME = "master_data.parquet"
 # ID dari Google Sheet yang berfungsi sebagai "otak" atau database aplikasi
-SPREADSHEET_ID = "1iX-LpYJrHRqD5-c2-D27kVY7PArYLaSCCd-nvd2y6Yg"
+SPREADSHEET_ID = "1viRz7mtIVDwcVbHLgZuGMdFnXszed2kIzE7SZrS7ROA"
 
 # --- Nama Worksheet di dalam Google Sheet "Otak" ---
 DB_SHEET_NAME = "database_brand"
@@ -770,4 +770,5 @@ elif st.session_state.mode == "dashboard":
         st.error("Gagal memuat data master. Silakan coba tarik data kembali.")
         st.session_state.mode = "initial"
         
+
 
