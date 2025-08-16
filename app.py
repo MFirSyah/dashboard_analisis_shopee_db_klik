@@ -304,7 +304,7 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
         # 3. Cari semua file CSV atau Google Sheet di dalam folder toko
         file_query = f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet') and trashed = false"
         files_in_folder = _drive_service.files().list(q=file_query, fields="files(id, name, mimeType)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get("files", [])
-
+        
         # 4. Iterasi melalui setiap file
         for file_item in files_in_folder:
             try:
@@ -324,7 +324,34 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
 
                 # 6. Baca file CSV menggunakan fungsi aman yang sudah kita buat
                 df = read_csv_safely(content)
-
+                
+                # >>> LETAKKAN KODE BARU ANDA DI SINI <<<
+                # --- BLOK KODE PENERJEMAH KOLOM ---
+                rename_map = {
+                    # Variasi untuk 'Nama Produk'
+                    'NAMA': NAMA_PRODUK_COL, 
+                    'NAMA PRODUK': NAMA_PRODUK_COL,
+                    'Nama': NAMA_PRODUK_COL,
+                    'nama': NAMA_PRODUK_COL,
+                    'nama_produk': NAMA_PRODUK_COL,
+                    # Variasi untuk 'Harga'
+                    'HARGA': HARGA_COL, 
+                    'Harga Barang': HARGA_COL,
+                    'harga': HARGA_COL,
+                    # Variasi untuk 'Terjual per bulan'
+                    'Terjual/bln': TERJUAL_COL,
+                    'Terjual/Bln': TERJUAL_COL,
+                    'TERJUAL/BLN': TERJUAL_COL,
+                    'Penjualan': TERJUAL_COL,
+                    'Terjual per Bulan': TERJUAL_COL,
+                    'terjual/bln': TERJUAL_COL,
+                    # Variasi untuk 'Link'
+                    'LINK': LINK_COL
+                }
+                # Terapkan kamus penerjemah ke DataFrame
+                df.rename(columns=rename_map, inplace=True)
+                # --- AKHIR BLOK KODE BARU ---
+                
                 # 7. Tambahkan data-data penting (metadata)
                 df[TOKO_COL] = folder["name"] # Nama Toko
                 
