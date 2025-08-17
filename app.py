@@ -138,54 +138,63 @@ def load_data_from_cache(drive_service, file_id):
     fh.seek(0)
     return pd.read_parquet(fh)
 
+# GANTI SELURUH FUNGSI LAMA ANDA DENGAN YANG INI
+# (Lokasinya di Bagian 5 atau Bagian 2, tergantung struktur terakhir Anda)
+
 def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFrame):
     """Menyimpan DataFrame ke Google Drive sebagai file parquet.
-    VERSI BARU: Dengan konversi tipe data yang aman untuk mencegah ArrowTypeError.
+    VERSI FINAL: Dengan penanganan Shared Drive eksplisit dan konversi tipe data.
     """
     st.write("Menyimpan data olahan ke cache cerdas di Google Drive...")
     
-    # Salin DataFrame agar data asli tidak berubah
-    df_safe = df_to_save.copy()
+    # --- Gerbang Pengaman: Pastikan folder target ada di Shared Drive ---
+    try:
+        folder_info = drive_service.files().get(
+            fileId=folder_id, fields="id, name, driveId", supportsAllDrives=True
+        ).execute()
+        drive_id = folder_info.get("driveId")
+        if not drive_id:
+            st.error(f"FATAL: Folder target '{folder_info.get('name')}' bukan bagian dari Shared Drive. Proses penyimpanan cache dibatalkan.")
+            st.info("Pastikan folder 'processed_data' dibuat langsung di dalam Shared Drive, bukan dipindahkan dari 'My Drive'.")
+            st.stop()
+    except Exception as e:
+        st.error(f"Gagal mendapatkan informasi folder dari Google Drive. Error: {e}")
+        st.stop()
 
-    # Blok penyelamat untuk standarisasi tipe data sebelum menyimpan
-    # 1. Ubah kolom Tanggal menjadi format string YYYY-MM-DD yang pasti aman.
+    # --- Blok Penyelamat Tipe Data ---
+    df_safe = df_to_save.copy()
     if TANGGAL_COL in df_safe.columns:
-        # Pastikan kolom tanggal adalah tipe datetime sebelum menggunakan .dt
         if pd.api.types.is_datetime64_any_dtype(df_safe[TANGGAL_COL]):
             df_safe[TANGGAL_COL] = df_safe[TANGGAL_COL].dt.strftime('%Y-%m-%d')
         else:
-            # Jika bukan datetime (misal, sudah jadi string), coba konversi dulu
             df_safe[TANGGAL_COL] = pd.to_datetime(df_safe[TANGGAL_COL], errors='coerce').dt.strftime('%Y-%m-%d')
-
-
-    # 2. Pastikan semua kolom 'object' (yang biasanya string) benar-benar string.
     for col in df_safe.select_dtypes(include=['object']).columns:
         df_safe[col] = df_safe[col].astype(str)
 
-    # Ubah DataFrame yang sudah aman menjadi format parquet di dalam memori
     buffer = io.BytesIO()
     df_safe.to_parquet(buffer, index=False)
     buffer.seek(0)
-
+    
     media_body = MediaIoBaseUpload(buffer, mimetype="application/octet-stream", resumable=True)
-
     existing_files = check_cache_exists(drive_service, folder_id, filename)
 
     try:
         if existing_files:
-            # Jika file sudah ada, lakukan UPDATE
             file_id = existing_files[0]["id"]
             drive_service.files().update(
                 fileId=file_id,
                 media_body=media_body,
-                supportsAllDrives=True
+                supportsAllDrives=True,
+                # PERBAIKAN KUNCI: Sebutkan ID Shared Drive secara eksplisit
+                body={'driveId': drive_id}
             ).execute()
             st.toast(f"Cache '{filename}' berhasil diperbarui.", icon="🔄")
         else:
-            # Jika file belum ada, lakukan CREATE
             file_metadata = {
                 "name": filename,
-                "parents": [folder_id]
+                "parents": [folder_id],
+                # PERBAIKAN KUNCI: Sebutkan ID Shared Drive secara eksplisit
+                "driveId": drive_id
             }
             drive_service.files().create(
                 body=file_metadata,
