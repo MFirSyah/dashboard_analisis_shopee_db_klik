@@ -197,6 +197,40 @@ def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFr
         st.error(f"Gagal menyimpan cache ke Google Drive. Error: {e}")
         st.stop()
 
+# TAMBAHKAN FUNGSI BARU INI (misal, di akhir Bagian 2)
+def update_source_csvs(drive_service, processed_df: pd.DataFrame):
+    """
+    Fungsi "Stempel Cerdas". Mengupdate file CSV asli di Drive
+    dengan menambahkan kolom BRAND yang sudah di-label.
+    """
+    st.write("Memulai proses 'Stempel Cerdas' pada file sumber...")
+    # Kelompokkan data berdasarkan file aslinya
+    grouped = processed_df.groupby('_file_id')
+    
+    for file_id, group_df in grouped:
+        # Buang kolom sementara sebelum menyimpan
+        group_df = group_df.drop(columns=['_file_id'])
+        
+        # Ubah DataFrame kembali ke format CSV di memori
+        csv_buffer = io.StringIO()
+        group_df.to_csv(csv_buffer, index=False)
+        csv_buffer.seek(0)
+        
+        # Siapkan media untuk diunggah
+        media_body = MediaIoBaseUpload(io.BytesIO(csv_buffer.read().encode('utf-8')), mimetype='text/csv', resumable=True)
+        
+        # Lakukan update pada file asli di Google Drive
+        try:
+            drive_service.files().update(
+                fileId=file_id,
+                media_body=media_body,
+                supportsAllDrives=True
+            ).execute()
+        except Exception as e:
+            st.warning(f"Gagal mengupdate file sumber (ID: {file_id}). Error: {e}")
+            
+    st.toast("Proses 'Stempel Cerdas' selesai!", icon="🔖")
+
 # =====================================================================================
 # Bagian 3: Fungsi-fungsi Inti (Backend)
 # Kumpulan fungsi utama untuk otentikasi, navigasi Drive, dan pengambilan data.
@@ -303,6 +337,7 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
     """
     Mengambil semua file data dari setiap subfolder toko di dalam folder 'data_upload',
     menggabungkannya menjadi satu DataFrame besar.
+    VERSI BARU: Menambahkan '_file_id' untuk mendukung Sistem Stempel Cerdas.
     """
     all_data = []
     
@@ -346,41 +381,23 @@ def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
                 # 6. Baca file CSV menggunakan fungsi aman yang sudah kita buat
                 df = read_csv_safely(content)
                 
-                # >>> LETAKKAN KODE BARU ANDA DI SINI <<<
                 # --- BLOK KODE PENERJEMAH KOLOM ---
                 rename_map = {
-                    # Variasi untuk 'Nama Produk'
-                    'NAMA': NAMA_PRODUK_COL, 
-                    'NAMA PRODUK': NAMA_PRODUK_COL,
-                    'Nama': NAMA_PRODUK_COL,
-                    'nama': NAMA_PRODUK_COL,
-                    'nama_produk': NAMA_PRODUK_COL,
-                    # Variasi untuk 'Harga'
-                    'HARGA': HARGA_COL, 
-                    'Harga Barang': HARGA_COL,
-                    'harga': HARGA_COL,
-                    # Variasi untuk 'Terjual per bulan'
-                    'Terjual/bln': TERJUAL_COL,
-                    'Terjual/Bln': TERJUAL_COL,
-                    'TERJUAL/BLN': TERJUAL_COL,
-                    'Penjualan': TERJUAL_COL,
-                    'Terjual per Bulan': TERJUAL_COL,
-                    'terjual/bln': TERJUAL_COL,
-                    # Variasi untuk 'Link'
-                    'LINK': LINK_COL
+                    'NAMA': NAMA_PRODUK_COL, 'NAMA PRODUK': NAMA_PRODUK_COL, 'Nama': NAMA_PRODUK_COL,
+                    'nama': NAMA_PRODUK_COL, 'nama_produk': NAMA_PRODUK_COL, 'HARGA': HARGA_COL, 
+                    'Harga Barang': HARGA_COL, 'harga': HARGA_COL, 'Terjual/bln': TERJUAL_COL,
+                    'Terjual/Bln': TERJUAL_COL, 'TERJUAL/BLN': TERJUAL_COL, 'Penjualan': TERJUAL_COL,
+                    'Terjual per Bulan': TERJUAL_COL, 'terjual/bln': TERJUAL_COL, 'LINK': LINK_COL
                 }
-                # Terapkan kamus penerjemah ke DataFrame
                 df.rename(columns=rename_map, inplace=True)
-                # --- AKHIR BLOK KODE BARU ---
+                
+                # BARU: Tambahkan file_id dari file asli untuk pelacakan "Stempel Cerdas"
+                df['_file_id'] = file_item.get("id")
                 
                 # 7. Tambahkan data-data penting (metadata)
-                df[TOKO_COL] = folder["name"] # Nama Toko
-                
-                # Ekstrak tanggal dari nama file
+                df[TOKO_COL] = folder["name"]
                 match = date_regex.search(file_item.get("name"))
                 df[TANGGAL_COL] = pd.to_datetime(match.group(1).replace("_", "-")) if match else pd.NaT
-                
-                # Tentukan status 'Tersedia' atau 'Habis' dari nama file
                 df[STATUS_COL] = "Tersedia" if "ready" in file_item.get("name").lower() else "Habis"
 
                 # 8. Validasi: Pastikan kolom wajib ada
@@ -662,32 +679,39 @@ def display_correction_mode(gsheets_service):
             fuzzy_threshold = st.slider("Tingkat kemiripan (%):", 80, 100, 90)
 
         submitted = st.form_submit_button("Ajarkan & Terapkan ke Berikutnya ▶")
-
+        
         if submitted:
             final_brand = new_brand_input.strip().upper() if new_brand_input else selected_brand
             if not final_brand:
                 st.error("Anda harus memilih atau memasukkan nama brand.")
                 return
 
-            # --- PROSES PEMBELAJARAN SISTEM ---
-            # 1. Simpan brand baru ke Google Sheet jika ada
+            # Proses 1: Simpan brand baru ke Google Sheet jika ada
             if new_brand_input and final_brand not in st.session_state.brand_db:
                 try:
                     sheet = gsheets_service.open_by_key(SPREADSHEET_ID).worksheet(DB_SHEET_NAME)
                     sheet.append_row([final_brand])
-                    st.session_state.brand_db.append(final_brand) # Update list brand di memori
+                    st.session_state.brand_db.append(final_brand)
                     st.toast(f"Brand baru '{final_brand}' ditambahkan ke database.", icon="➕")
+                    
+                    # BARU: Buang cache 'otak' yang lama agar data baru bisa dibaca
+                    load_intelligence_data.clear() 
+                    
                 except Exception as e: st.error(f"Gagal menyimpan brand baru: {e}")
 
-            # 2. Simpan alias baru ke Google Sheet jika diisi
+            # Proses 2: Simpan alias baru ke Google Sheet jika diisi
             alias_to_save = alias_input.strip().upper()
             if alias_to_save:
                 try:
                     sheet = gsheets_service.open_by_key(SPREADSHEET_ID).worksheet(KAMUS_SHEET_NAME)
                     sheet.append_row([alias_to_save, final_brand])
                     st.toast(f"Alias '{alias_to_save}' disimpan.", icon="📚")
+                    
+                    # BARU: Buang cache 'otak' yang lama agar data baru bisa dibaca
+                    load_intelligence_data.clear()
+                    
                 except Exception as e: st.error(f"Gagal menyimpan alias: {e}")
-
+        
             # --- PROSES PENERAPAN BATCH ---
             # 3. Tentukan baris mana saja yang akan diupdate
             indices_to_update = set()
@@ -860,8 +884,11 @@ if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
             st.warning("Tidak ada data mentah valid yang bisa diproses.")
             st.session_state.mode = "initial"
         else:
-            # MODIFIKASI: Kirim 'status_placeholder' ke dalam fungsi process_raw_data
+            # Olah data mentah menjadi data bersih
             processed_df = process_raw_data(raw_df, brand_db, kamus_brand, db_kategori, status_placeholder)
+
+            # BARU: Panggil fungsi "Stempel Cerdas" untuk mengupdate file CSV sumber
+            update_source_csvs(drive_service, processed_df)
 
             # GERBANG KUALITAS DATA: Cek apakah ada brand yang tidak dikenali
             unknown_brands_count = (processed_df[BRAND_COL] == "TIDAK DIKETAHUI").sum()
@@ -877,7 +904,7 @@ if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
                 save_data_to_cache(drive_service, data_olahan_folder_id, CACHE_FILE_NAME, processed_df)
                 st.session_state.master_df = processed_df
                 st.session_state.mode = "dashboard"
-
+                
     # BARU: Setelah semua proses selesai, bersihkan "papan tulis"
     status_placeholder.empty()
     
