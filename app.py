@@ -72,7 +72,7 @@ def get_gspread_client():
     creds_dict = st.secrets["gcp_service_account"]
     creds = Credentials.from_service_account_info(creds_dict)
     scoped_creds = creds.with_scopes([
-        "https.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ])
     return gspread.authorize(scoped_creds)
@@ -432,8 +432,8 @@ if st.session_state.mode == "dashboard":
     if df_gabungan.empty:
         st.warning("Tidak ada data untuk ditampilkan. Silakan tarik data terlebih dahulu.")
     else:
-        # --- PERBAIKAN 4: Atasi TypeError dengan .dropna() ---
-        # Memastikan tidak ada nilai NaN saat membuat list toko
+        # --- PERBAIKAN ERROR TypeError: Inilah baris yang diperbaiki ---
+        # Menambahkan .dropna() untuk membuang nilai kosong sebelum mengurutkan
         toko_list = sorted(df_gabungan['TOKO'].dropna().unique())
         
         tab1, tab2, tab3 = st.tabs(["📊 Analisis Umum", "📈 Detail Per Toko", "📋 Data Mentah Gabungan"])
