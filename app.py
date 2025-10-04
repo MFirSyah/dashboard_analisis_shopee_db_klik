@@ -146,56 +146,61 @@ def format_rupiah(amount: float) -> str:
     if pd.isna(amount): return "Rp 0"
     return f"Rp {amount:,.0f}".replace(",", ".")
 
-# --- PERUBAIKAN 1 (Revisi): Fungsi Pelabelan Cerdas untuk DB KLIK menggunakan TF-IDF ---
+# --- PERUBAIKAN: Fungsi Pelabelan Cerdas Dikembalikan ke Fuzzy Matching ---
 def smart_label_dbklik(df_dbklik: pd.DataFrame, df_database: pd.DataFrame) -> pd.DataFrame:
     """
-    Melabeli SKU dan KATEGORI untuk produk DB KLIK menggunakan TF-IDF dan Cosine Similarity.
-    Metode ini menganalisis kemiripan teks berdasarkan bobot kata untuk akurasi yang lebih tinggi
-    dan menggunakan data produk yang paling mirip dari database.
+    Melabeli SKU dan KATEGORI untuk produk DB KLIK menggunakan Fuzzy String Matching (thefuzz).
+    Metode ini lebih ringan sumber dayanya dibandingkan TF-IDF untuk pencocokan satu-ke-satu.
     """
-    st.write("Memulai pelabelan cerdas (TF-IDF) untuk produk DB KLIK...")
+    st.write("Memulai pelabelan cerdas (Fuzzy Matching) untuk produk DB KLIK...")
     if 'NAMA' not in df_database.columns or df_database.empty:
         st.warning("Worksheet DATABASE kosong atau tidak memiliki kolom 'NAMA'. Pelabelan dilewati.")
         df_dbklik['SKU'] = "DB_INVALID"
         df_dbklik['KATEGORI'] = "DB_INVALID"
         return df_dbklik
 
-    # 1. Normalisasi nama produk di kedua DataFrame
-    db_database_normalized = df_database['NAMA'].apply(normalize_text_for_similarity)
-    db_dbklik_normalized = df_dbklik['NAMA'].apply(normalize_text_for_similarity)
-
-    # 2. Buat model TF-IDF yang dioptimalkan
-    vectorizer = TfidfVectorizer(
-        max_features=5000,  # Batasi jumlah kata yang dianalisis ke 5000 kata paling penting
-        min_df=2,           # Abaikan kata yang hanya muncul di 1 nama produk (mengurangi noise)
-        ngram_range=(1, 2)  # Analisis kata tunggal dan frasa 2 kata (misal: "core i5")
-    )
+    # Siapkan 'choices' untuk pencarian fuzzy, ini adalah daftar nama produk dari database
+    choices = df_database['NAMA'].tolist()
     
-    tfidf_matrix_database = vectorizer.fit_transform(db_database_normalized)
-    tfidf_matrix_dbklik = vectorizer.transform(db_dbklik_normalized)
-
-    # 3. Hitung cosine similarity
-    cosine_similarities = cosine_similarity(tfidf_matrix_dbklik, tfidf_matrix_database)
-
-    # 4. Cari kecocokan terbaik
-    best_match_indices = np.argmax(cosine_similarities, axis=1)
-    best_match_scores = np.max(cosine_similarities, axis=1)
-
-    matched_skus = df_database['SKU'].iloc[best_match_indices].values
-    matched_kategoris = df_database['KATEGORI'].iloc[best_match_indices].values
-
-    # 5. Terapkan logika berdasarkan skor kemiripan
-    similarity_threshold = 0.3 
-    final_skus = np.where(best_match_scores >= similarity_threshold, matched_skus, "LOW_CONFIDENCE_MATCH")
-    final_kategoris = np.where(best_match_scores >= similarity_threshold, matched_kategoris, "LOW_CONFIDENCE_MATCH")
-
-    df_dbklik['SKU'] = final_skus
-    df_dbklik['KATEGORI'] = final_kategoris
+    # Inisialisasi list untuk menyimpan hasil
+    matched_skus = []
+    matched_kategoris = []
     
-    st.write("✔️ Pelabelan cerdas DB KLIK (TF-IDF) selesai.")
+    # Buat progress bar
+    progress_bar = st.progress(0, text="Mencocokkan produk DB KLIK...")
+    total_rows = len(df_dbklik)
+    
+    # Iterasi melalui setiap baris di DataFrame DB KLIK
+    for i, row in enumerate(df_dbklik.itertuples()):
+        product_name = row.NAMA
+        
+        # Cari satu kecocokan terbaik dari database
+        # fuzz.token_set_ratio lebih toleran terhadap urutan kata yang berbeda
+        best_match = process.extractOne(str(product_name), choices, scorer=fuzz.token_set_ratio)
+        
+        if best_match and best_match[1] >= 65: # Ambang batas kemiripan 65%
+            matched_name = best_match[0]
+            # Ambil data SKU dan Kategori dari database berdasarkan nama yang cocok
+            match_details = df_database[df_database['NAMA'] == matched_name].iloc[0]
+            matched_skus.append(match_details['SKU'])
+            matched_kategoris.append(match_details['KATEGORI'])
+        else:
+            # Jika tidak ada kecocokan yang baik, gunakan label default
+            matched_skus.append("LOW_CONFIDENCE_MATCH")
+            matched_kategoris.append("LOW_CONFIDENCE_MATCH")
+        
+        # Update progress bar
+        progress_bar.progress((i + 1) / total_rows, text=f"Mencocokkan: {str(product_name)[:30]}...")
+
+    progress_bar.empty() # Hapus progress bar setelah selesai
+    
+    # Assign hasil ke DataFrame
+    df_dbklik['SKU'] = matched_skus
+    df_dbklik['KATEGORI'] = matched_kategoris
+
+    st.write("✔️ Pelabelan cerdas DB KLIK (Fuzzy Matching) selesai.")
     return df_dbklik
     
-# --- PERUBAIKAN 2 (Kinerja): Fungsi Normalisasi Teks untuk TF-IDF ---
 def normalize_text_for_similarity(text: str) -> str:
     """Membersihkan dan menstandarkan nama produk untuk analisis kemiripan."""
     if not isinstance(text, str): return ""
@@ -354,7 +359,7 @@ def display_wow_metric(label, current_value, previous_value):
 
 # --- Judul Aplikasi ---
 st.title("📊 Dashboard Analisis Kompetitor & Penjualan")
-st.markdown("Versi 4.1 - Optimasi Kinerja TF-IDF")
+st.markdown("Versi 4.2 - Optimasi Pelabelan (Fuzzy)")
 
 # --- Sidebar ---
 with st.sidebar:
@@ -386,11 +391,11 @@ with st.sidebar:
 
             # Filter produk berdasarkan brand yang dipilih
             if selected_brand == "SEMUA BRAND":
-                product_list = sorted(db_klik_df['NAMA'].unique())
+                product_list = sorted(db_klik_df['NAMA'].dropna().unique())
             else:
-                product_list = sorted(db_klik_df[db_klik_df['BRAND'] == selected_brand]['NAMA'].unique())
+                product_list = sorted(db_klik_df[db_klik_df['BRAND'] == selected_brand]['NAMA'].dropna().unique())
         else:
-            product_list = sorted(db_klik_df['NAMA'].unique())
+            product_list = sorted(db_klik_df['NAMA'].dropna().unique())
 
 
         selected_product = st.selectbox(
