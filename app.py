@@ -1,952 +1,646 @@
-# ===================================================================================
-#  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR
-#  Direplikasi dan dikembangkan berdasarkan v3.4 Final
-# ===================================================================================
-
-# --- Impor Pustaka/Library ---
-# Pustaka-pustaka ini akan kita butuhkan untuk keseluruhan aplikasi
 import streamlit as st
 import pandas as pd
+import numpy as np
+import plotly.express as px
+import re
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from google.api_core.exceptions import GoogleAPIError
 import io
-from thefuzz import process, fuzz
-import re
-import plotly.express as px
-import time
-from typing import Callable, Any, Dict, List, Optional, Tuple, Set
+from datetime import datetime
 
-# --- Konfigurasi Halaman Utama ---
-# Mengatur judul tab di browser, ikon, dan layout halaman menjadi lebar
+# ===================================================================================
+# KONFIGURASI HALAMAN STREAMLIT
+# ===================================================================================
 st.set_page_config(
-    layout="wide", 
-    page_title="Dashboard Analisis Kompetitor"
+    page_title="Mesin Analisis Kompetitor",
+    page_icon="🧠",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# =====================================================================================
-# BLOK KONFIGURASI UTAMA
-# Di sini kita mendefinisikan semua variabel penting agar mudah diubah di satu tempat.
-# =====================================================================================
+# ===================================================================================
+# FUNGSI-FUNGSI UTAMA
+# ===================================================================================
 
-# --- ID Google Drive & Sheets ---
-# ID Folder Induk tempat semua folder proyek berada
-PARENT_FOLDER_ID = "1rnx2fExmZi_AcldKvWb6_xv0ipj4WRbZ" 
-# Nama folder tempat Anda mengunggah data mentah (CSV dari toko-toko)
-DATA_MENTAH_FOLDER_NAME = "data_upload"
-# Nama folder tempat aplikasi akan menyimpan data olahan (cache parquet)
-DATA_OLAHAN_FOLDER_NAME = "processed_data"
-# Nama file untuk cache data olahan
-CACHE_FILE_NAME = "master_data.parquet"
-# ID dari Google Sheet yang berfungsi sebagai "otak" atau database aplikasi
-SPREADSHEET_ID = "1viRz7mtIVDwcVbHLgZuGMdFnXszed2kIzE7SZrS7ROA"
+# --- Fungsi Utilitas ---
+def format_rupiah(angka):
+    """Mengubah angka menjadi format Rupiah."""
+    if pd.isna(angka):
+        return "Rp 0"
+    return f"Rp {int(angka):,.0f}".replace(',', '.')
 
-# --- Nama Worksheet di dalam Google Sheet "Otak" ---
-DB_SHEET_NAME = "database_brand"
-KAMUS_SHEET_NAME = "kamus_brand"
-KATEGORI_SHEET_NAME = "DATABASE"
+def normalize_text(name):
+    """Membersihkan dan menstandarkan nama produk untuk TF-IDF."""
+    if not isinstance(name, str): return ""
+    text = name.lower()
+    text = re.sub(r'[^a-zA-Z0-9\s.]', ' ', text) # Hapus karakter non-alphanumeric
+    text = re.sub(r'\s+', ' ', text).strip() # Hapus spasi berlebih
+    return text
 
-# --- Standardisasi Nama Kolom ---
-# Mendefinisikan nama kolom standar yang akan digunakan di seluruh aplikasi
-NAMA_PRODUK_COL = "Nama Produk"
-HARGA_COL = "Harga"
-TERJUAL_COL = "Terjual per bulan"
-LINK_COL = "Link"
-STATUS_COL = "Status"
-TOKO_COL = "Toko"
-BRAND_COL = "BRAND"
-TANGGAL_COL = "Tanggal"
-OMZET_COL = "Omzet"
-KATEGORI_COL = "Kategori"
-# Daftar kolom yang wajib ada di setiap file data mentah
-REQUIRED_COLUMNS = {NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL}
-
-# =====================================================================================
-# Bagian 2: Utilities (Fungsi Bantuan)
-# Kumpulan fungsi kecil untuk membuat aplikasi lebih tangguh dan pintar.
-# =====================================================================================
-
-# GANTI DENGAN FUNGSI BARU INI di Bagian 2
-
-def with_retry(max_attempts: int = 4, base_delay: float = 1.0, exc_types: Tuple = (Exception,),
-               fail_msg: Optional[str] = None):
-    """
-    Decorator untuk mencoba ulang sebuah fungsi jika gagal.
-    Versi ini dirancang untuk bisa menerima argumen (misal: fail_msg).
-    """
-    def decorator(fn: Callable):
-        def wrapper(*args, **kwargs):
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    # Mencoba menjalankan fungsi aslinya
-                    return fn(*args, **kwargs)
-                except exc_types as e:
-                    # Jika gagal dan ini adalah percobaan terakhir, tampilkan error dan hentikan
-                    if attempt == max_attempts:
-                        if fail_msg:
-                            st.error(f"{fail_msg}: {e}")
-                        raise
-                    # Jika bukan percobaan terakhir, tunggu sejenak sebelum mencoba lagi
-                    time.sleep(base_delay * attempt)
-        return wrapper
-    return decorator
-# Daftar format encoding dan pemisah (separator) yang umum untuk file CSV
-CSV_POSSIBLE_ENCODINGS = ["utf-8", "utf-8-sig", "latin1", "iso-8859-1"]
-CSV_POSSIBLE_SEPARATORS = [",", ";", "\t", "|"]
-
-def read_csv_safely(byte_stream: io.BytesIO) -> pd.DataFrame:
-    """
-    Membaca data CSV dari byte stream dengan mencoba berbagai kombinasi
-    encoding dan separator untuk memaksimalkan keberhasilan pembacaan.
-    """
-    # Mengembalikan pointer ke awal file stream
-    byte_stream.seek(0) 
-    # Membaca seluruh konten byte untuk digunakan ulang
-    raw_bytes = byte_stream.read()
-    
-    for enc in CSV_POSSIBLE_ENCODINGS:
-        for sep in CSV_POSSIBLE_SEPARATORS:
-            try:
-                # Membuat stream baru dari byte yang sudah dibaca
-                df = pd.read_csv(io.BytesIO(raw_bytes), encoding=enc, sep=sep)
-                # Jika pembacaan berhasil (menghasilkan lebih dari 1 kolom), kembalikan hasilnya
-                if len(df.columns) > 1:
-                    return df
-            except Exception:
-                # Jika gagal, coba kombinasi berikutnya
-                pass
-                
-    # Jika semua kombinasi gagal, coba cara standar Pandas sebagai usaha terakhir
-    return pd.read_csv(io.BytesIO(raw_bytes))
-
-def check_cache_exists(drive_service, folder_id, filename):
-    """Mengecek apakah file cache sudah ada di Google Drive."""
-    query = f"'{folder_id}' in parents and name = '{filename}' and trashed = false"
-    response = drive_service.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-    return response.get("files", [])
-
-def load_data_from_cache(drive_service, file_id):
-    """Mengunduh file cache (parquet) dari Google Drive dan memuatnya sebagai DataFrame."""
-    st.toast("Memuat data dari cache cerdas...", icon="⚡")
-    request = drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.seek(0)
-    return pd.read_parquet(fh)
-
-# GANTI SELURUH FUNGSI LAMA ANDA DENGAN YANG INI
-# (Lokasinya di Bagian 5 atau Bagian 2, tergantung struktur terakhir Anda)
-
-def save_data_to_cache(drive_service, folder_id, filename, df_to_save: pd.DataFrame):
-    """Menyimpan DataFrame ke Google Drive sebagai file parquet.
-    VERSI FINAL: Dengan penanganan Shared Drive eksplisit dan konversi tipe data.
-    """
-    st.write("Menyimpan data olahan ke cache cerdas di Google Drive...")
-    
-    # --- Gerbang Pengaman: Pastikan folder target ada di Shared Drive ---
+@st.cache_resource
+def get_google_sheets_connection():
+    """Membuat koneksi ke Google Sheets menggunakan st.secrets."""
     try:
-        folder_info = drive_service.files().get(
-            fileId=folder_id, fields="id, name, driveId", supportsAllDrives=True
-        ).execute()
-        drive_id = folder_info.get("driveId")
-        if not drive_id:
-            st.error(f"FATAL: Folder target '{folder_info.get('name')}' bukan bagian dari Shared Drive. Proses penyimpanan cache dibatalkan.")
-            st.info("Pastikan folder 'processed_data' dibuat langsung di dalam Shared Drive, bukan dipindahkan dari 'My Drive'.")
-            st.stop()
+        creds_dict = {
+            "type": st.secrets["gcp_service_account"]["type"],
+            "project_id": st.secrets["gcp_service_account"]["project_id"],
+            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+            "private_key": st.secrets["gcp_service_account"]["private_key"],
+            "client_email": st.secrets["gcp_service_account"]["client_email"],
+            "client_id": st.secrets["gcp_service_account"]["client_id"],
+            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
+        }
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        return client
     except Exception as e:
-        st.error(f"Gagal mendapatkan informasi folder dari Google Drive. Error: {e}")
-        st.stop()
+        st.error(f"Gagal terhubung ke Google API. Pastikan file secrets.toml Anda benar. Kesalahan: {e}")
+        return None
 
-    # --- Blok Penyelamat Tipe Data ---
-    df_safe = df_to_save.copy()
-    if TANGGAL_COL in df_safe.columns:
-        if pd.api.types.is_datetime64_any_dtype(df_safe[TANGGAL_COL]):
-            df_safe[TANGGAL_COL] = df_safe[TANGGAL_COL].dt.strftime('%Y-%m-%d')
-        else:
-            df_safe[TANGGAL_COL] = pd.to_datetime(df_safe[TANGGAL_COL], errors='coerce').dt.strftime('%Y-%m-%d')
-    for col in df_safe.select_dtypes(include=['object']).columns:
-        df_safe[col] = df_safe[col].astype(str)
-
-    buffer = io.BytesIO()
-    df_safe.to_parquet(buffer, index=False)
-    buffer.seek(0)
-    
-    media_body = MediaIoBaseUpload(buffer, mimetype="application/octet-stream", resumable=True)
-    existing_files = check_cache_exists(drive_service, folder_id, filename)
-
+@st.cache_data(ttl=600)  # Cache data for 10 minutes
+def load_data_from_gsheets(_client, spreadsheet_id):
+    """Memuat dan memproses semua data dari Google Sheets."""
+    status_placeholder = st.empty()
+    status_placeholder.info("⏳ Menghubungkan ke Google Sheets...")
     try:
-        if existing_files:
-            file_id = existing_files[0]["id"]
-            drive_service.files().update(
-                fileId=file_id,
-                media_body=media_body,
-                supportsAllDrives=True,
-                # PERBAIKAN KUNCI: Sebutkan ID Shared Drive secara eksplisit
-                body={'driveId': drive_id}
-            ).execute()
-            st.toast(f"Cache '{filename}' berhasil diperbarui.", icon="🔄")
-        else:
-            file_metadata = {
-                "name": filename,
-                "parents": [folder_id],
-                # PERBAIKAN KUNCI: Sebutkan ID Shared Drive secara eksplisit
-                "driveId": drive_id
-            }
-            drive_service.files().create(
-                body=file_metadata,
-                media_body=media_body,
-                supportsAllDrives=True
-            ).execute()
-            st.toast(f"Cache '{filename}' berhasil dibuat.", icon="✅")
-    except Exception as e:
-        st.error(f"Gagal menyimpan cache ke Google Drive. Error: {e}")
-        st.stop()
+        spreadsheet = _client.open_by_key(spreadsheet_id)
+        worksheets = spreadsheet.worksheets()
+        
+        all_dfs = {}
+        required_sheets = ["DATABASE", "kamus_brand"]
+        
+        for sheet in required_sheets:
+            status_placeholder.info(f"📚 Memuat worksheet master: {sheet}...")
+            worksheet = spreadsheet.worksheet(sheet)
+            data = worksheet.get_all_records()
+            all_dfs[sheet] = pd.DataFrame(data)
 
-# TAMBAHKAN FUNGSI BARU INI (misal, di akhir Bagian 2)
-def update_source_csvs(drive_service, processed_df: pd.DataFrame):
-    """
-    Fungsi "Stempel Cerdas". Mengupdate file CSV asli di Drive
-    dengan menambahkan kolom BRAND yang sudah di-label.
-    """
-    st.write("Memulai proses 'Stempel Cerdas' pada file sumber...")
-    # Kelompokkan data berdasarkan file aslinya
-    grouped = processed_df.groupby('_file_id')
-    
-    for file_id, group_df in grouped:
-        # Buang kolom sementara sebelum menyimpan
-        group_df = group_df.drop(columns=['_file_id'])
-        
-        # Ubah DataFrame kembali ke format CSV di memori
-        csv_buffer = io.StringIO()
-        group_df.to_csv(csv_buffer, index=False)
-        csv_buffer.seek(0)
-        
-        # Siapkan media untuk diunggah
-        media_body = MediaIoBaseUpload(io.BytesIO(csv_buffer.read().encode('utf-8')), mimetype='text/csv', resumable=True)
-        
-        # Lakukan update pada file asli di Google Drive
-        try:
-            drive_service.files().update(
-                fileId=file_id,
-                media_body=media_body,
-                supportsAllDrives=True
-            ).execute()
-        except Exception as e:
-            st.warning(f"Gagal mengupdate file sumber (ID: {file_id}). Error: {e}")
+        kamus_brand = all_dfs['kamus_brand']
+        kamus_brand_dict = pd.Series(kamus_brand.Brand_Utama.values, index=kamus_brand.Alias.str.lower()).to_dict()
+
+        rekap_sheets = [ws for ws in worksheets if "REKAP" in ws.title]
+        combined_data = []
+
+        for i, worksheet in enumerate(rekap_sheets):
+            status_placeholder.info(f"📈 Memuat data toko ({i+1}/{len(rekap_sheets)}): {worksheet.title}...")
+            data = worksheet.get_all_records()
+            if not data: continue
             
-    st.toast("Proses 'Stempel Cerdas' selesai!", icon="🔖")
+            df = pd.DataFrame(data)
+            df['TANGGAL'] = pd.to_datetime(df['TANGGAL'], errors='coerce')
+            
+            parts = worksheet.title.split(" - ")
+            toko = parts[0]
+            status = parts[-1]
+            
+            df['Toko'] = toko
+            df['Status'] = status
+            df.rename(columns={'NAMA': 'Nama Produk'}, inplace=True)
+            
+            df['BRAND'] = df['BRAND'].str.lower().map(kamus_brand_dict).fillna(df['BRAND'])
+            
+            combined_data.append(df)
 
-# =====================================================================================
-# Bagian 3: Fungsi-fungsi Inti (Backend)
-# Kumpulan fungsi utama untuk otentikasi, navigasi Drive, dan pengambilan data.
-# =====================================================================================
+        status_placeholder.success("✅ Semua data berhasil dimuat dan diproses!")
+        
+        if not combined_data:
+            st.error("Tidak ada data rekap yang ditemukan di spreadsheet.")
+            return None, None
+            
+        final_df = pd.concat(combined_data, ignore_index=True)
+        numeric_cols = ['HARGA', 'TERJUAL/BLN']
+        for col in numeric_cols:
+            if col in final_df.columns:
+                final_df[col] = pd.to_numeric(final_df[col], errors='coerce').fillna(0)
+        
+        final_df['Omzet'] = final_df['HARGA'] * final_df['TERJUAL/BLN']
 
-# --- Fungsi Otentikasi & Koneksi ---
-@st.cache_resource(show_spinner="Menghubungkan ke Google API...")
-def get_google_apis():
-    """
-    Membuat koneksi aman ke Google Drive dan Google Sheets API.
-    Menggunakan @st.cache_resource agar koneksi ini dibuat sekali saja.
-    """
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    
-    # Mengambil kredensial dari Streamlit Secrets
-    creds = Credentials.from_service_account_info(
-        st.secrets["google_service_account"],
-        scopes=scopes
-    )
-    
-    # Membuat service client untuk Google Drive API v3
-    drive_service = build("drive", "v3", credentials=creds)
-    
-    # Membuat service client untuk Google Sheets API (via gspread)
-    gsheets_service = gspread.authorize(creds)
-    
-    return drive_service, gsheets_service
+        return final_df, all_dfs['DATABASE']
 
-
-# --- Fungsi untuk Manajemen Folder di Google Drive ---
-@st.cache_data(show_spinner="Mencari ID folder di Google Drive...")
-def find_folder_id(_drive_service, parent_id, folder_name):
-    """
-    Mencari ID dari sebuah folder berdasarkan namanya di dalam folder induk (parent).
-    """
-    query = (
-        f"'{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' "
-        f"and name = '{folder_name}' and trashed = false"
-    )
-
-    # Menggunakan fungsi with_retry yang sudah kita buat
-    @with_retry(fail_msg=f"Gagal mencari folder '{folder_name}' setelah beberapa kali percobaan.")
-    def _list_folders():
-        return _drive_service.files().list(
-            q=query,
-            fields="files(id, name)",
-            supportsAllDrives=True,      # Wajib untuk Shared Drive
-            includeItemsFromAllDrives=True # Wajib untuk Shared Drive
-        ).execute()
-
-    response = _list_folders()
-    files = response.get("files", [])
-    if files:
-        return files[0].get("id")
-    
-    # Jika folder tidak ditemukan, hentikan aplikasi dan beri pesan error
-    st.error(f"FATAL: Folder '{folder_name}' tidak ditemukan di dalam folder induk (ID: {parent_id}).")
-    st.info("Pastikan nama folder di Google Drive sama persis dengan yang ada di konfigurasi.")
-    st.stop()
-
-
-# --- Fungsi untuk Memuat Data "Otak" (Database Brand, Kamus, Kategori) ---
-@st.cache_data(show_spinner="Memuat 'otak' dari Google Sheets...", ttl=3600)
-def load_intelligence_data(_gsheets_service, spreadsheet_id):
-    """
-    Mengambil semua data 'pintar' dari Google Sheet (database brand, kamus, kategori).
-    Data di-cache selama 1 jam (3600 detik) untuk efisiensi.
-    """
-    try:
-        spreadsheet = _gsheets_service.open_by_key(spreadsheet_id)
-
-        # 1. Mengambil database brand utama (hanya kolom pertama)
-        db_sheet = spreadsheet.worksheet(DB_SHEET_NAME)
-        # Mengambil semua nilai di kolom pertama yang tidak kosong
-        brand_db_list = [item for item in db_sheet.col_values(1) if item]
-
-        # 2. Mengambil kamus alias brand dan mengubahnya menjadi dictionary
-        kamus_sheet = spreadsheet.worksheet(KAMUS_SHEET_NAME)
-        kamus_df = pd.DataFrame(kamus_sheet.get_all_records())
-        # Mengubah DataFrame menjadi dictionary agar pencarian lebih cepat (Alias -> Brand_Utama)
-        kamus_dict = pd.Series(kamus_df.Brand_Utama.values, index=kamus_df.Alias).to_dict()
-
-        # 3. Mengambil database produk untuk pemetaan kategori
-        kategori_sheet = spreadsheet.worksheet(KATEGORI_SHEET_NAME)
-        db_kategori_df = pd.DataFrame(kategori_sheet.get_all_records())
-        # Menyeragamkan nama kolom menjadi huruf besar
-        db_kategori_df.columns = [str(col).strip().upper() for col in db_kategori_df.columns]
-
-        return brand_db_list, kamus_dict, db_kategori_df
-    
-    except gspread.exceptions.WorksheetNotFound as e:
-        st.error(f"FATAL: Worksheet '{e.args[0]}' tidak ditemukan di Google Sheet 'Otak'. Proses dihentikan.")
-        st.stop()
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error(f"Spreadsheet dengan ID '{spreadsheet_id}' tidak ditemukan. Mohon periksa kembali ID di secrets Anda.")
+        return None, None
     except Exception as e:
-        st.error(f"Gagal memuat data dari Google Sheet 'Otak'. Error: {e}")
-        st.stop()
-
-# --- Fungsi untuk Membaca Semua Data Mentah dari Drive ---
-@st.cache_data(show_spinner="Membaca semua data mentah dari folder kompetitor...", ttl=3600)
-def get_raw_data_from_drive(_drive_service, data_mentah_folder_id):
-    """
-    Mengambil semua file data dari setiap subfolder toko di dalam folder 'data_upload',
-    menggabungkannya menjadi satu DataFrame besar.
-    VERSI BARU: Menambahkan '_file_id' untuk mendukung Sistem Stempel Cerdas.
-    """
-    all_data = []
-    
-    # 1. Cari semua subfolder (toko) di dalam folder 'data_upload'
-    query_subfolders = f"'{data_mentah_folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    subfolders = _drive_service.files().list(q=query_subfolders, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get("files", [])
-
-    if not subfolders:
-        st.warning("Tidak ada folder toko yang ditemukan di dalam folder 'data_upload'.")
-        return pd.DataFrame()
-
-    progress_bar = st.progress(0, text="Memulai pembacaan data...")
-    date_regex = re.compile(r"(\d{4}[-_]\d{2}[-_]\d{2})") # Pola untuk mengekstrak tanggal dari nama file
-
-    # 2. Iterasi melalui setiap folder toko
-    for i, folder in enumerate(subfolders):
-        progress_text = f"Membaca folder toko: {folder['name']}..."
-        progress_bar.progress((i + 1) / len(subfolders), text=progress_text)
-        
-        # 3. Cari semua file CSV atau Google Sheet di dalam folder toko
-        file_query = f"'{folder['id']}' in parents and (mimeType='text/csv' or mimeType='application/vnd.google-apps.spreadsheet') and trashed = false"
-        files_in_folder = _drive_service.files().list(q=file_query, fields="files(id, name, mimeType)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get("files", [])
-        
-        # 4. Iterasi melalui setiap file
-        for file_item in files_in_folder:
-            try:
-                # 5. Download atau Export file menjadi format yang bisa dibaca Pandas
-                if file_item.get("mimeType") == 'application/vnd.google-apps.spreadsheet':
-                    # Jika file adalah Google Sheet, export sebagai CSV
-                    request = _drive_service.files().export_media(fileId=file_item.get("id"), mimeType="text/csv", supportsAllDrives=True)
-                    content = io.BytesIO(request.execute())
-                else:
-                    # Jika file adalah CSV, download langsung
-                    request = _drive_service.files().get_media(fileId=file_item.get("id"), supportsAllDrives=True)
-                    buf = io.BytesIO()
-                    downloader = MediaIoBaseDownload(buf, request)
-                    done = False
-                    while not done: _, done = downloader.next_chunk()
-                    content = buf
-
-                # 6. Baca file CSV menggunakan fungsi aman yang sudah kita buat
-                df = read_csv_safely(content)
-                
-                # --- BLOK KODE PENERJEMAH KOLOM ---
-                rename_map = {
-                    'NAMA': NAMA_PRODUK_COL, 'NAMA PRODUK': NAMA_PRODUK_COL, 'Nama': NAMA_PRODUK_COL,
-                    'nama': NAMA_PRODUK_COL, 'nama_produk': NAMA_PRODUK_COL, 'HARGA': HARGA_COL, 
-                    'Harga Barang': HARGA_COL, 'harga': HARGA_COL, 'Terjual/bln': TERJUAL_COL,
-                    'Terjual/Bln': TERJUAL_COL, 'TERJUAL/BLN': TERJUAL_COL, 'Penjualan': TERJUAL_COL,
-                    'Terjual per Bulan': TERJUAL_COL, 'terjual/bln': TERJUAL_COL, 'LINK': LINK_COL
-                }
-                df.rename(columns=rename_map, inplace=True)
-                
-                # BARU: Tambahkan file_id dari file asli untuk pelacakan "Stempel Cerdas"
-                df['_file_id'] = file_item.get("id")
-                
-                # 7. Tambahkan data-data penting (metadata)
-                df[TOKO_COL] = folder["name"]
-                match = date_regex.search(file_item.get("name"))
-                df[TANGGAL_COL] = pd.to_datetime(match.group(1).replace("_", "-")) if match else pd.NaT
-                df[STATUS_COL] = "Tersedia" if "ready" in file_item.get("name").lower() else "Habis"
-
-                # 8. Validasi: Pastikan kolom wajib ada
-                if not REQUIRED_COLUMNS.issubset(df.columns):
-                    st.warning(f"File '{file_item.get('name')}' di folder '{folder['name']}' dilewati karena ada kolom wajib yang hilang.")
-                    continue
-
-                all_data.append(df)
-            except Exception as e:
-                st.error(f"Gagal memproses file '{file_item.get('name')}' di folder '{folder['name']}'. Error: {e}. File dilewati.")
-                continue
-
-    progress_bar.empty()
-    if not all_data: return pd.DataFrame()
-    return pd.concat(all_data, ignore_index=True)
-
-# =====================================================================================
-# Bagian 4: Fungsi-fungsi Pemrosesan Data
-# Di sinilah data mentah dibersihkan, diperkaya, dan diberi label (brand & kategori).
-# =====================================================================================
-
-# (Ganti fungsi lama Anda di Bagian 4 dengan yang ini)
-
-def process_raw_data(raw_df: pd.DataFrame, brand_db: List[str], kamus_brand: Dict[str, str], db_kategori: pd.DataFrame, placeholder):
-    """
-    Orkestrator utama untuk membersihkan, memperkaya, dan melabeli data mentah.
-    VERSI BARU: Menampilkan preview data selama proses berlangsung.
-    """
-    if raw_df.empty:
-        return raw_df
-
-    df = raw_df.copy()
-    
-    # Tahap 1: Pembersihan Awal & Perhitungan Omzet
-    placeholder.info("⚙️ Membersihkan data dan menghitung Omzet...")
-    df[HARGA_COL] = pd.to_numeric(df.get(HARGA_COL), errors="coerce").fillna(0)
-    df[TERJUAL_COL] = pd.to_numeric(df.get(TERJUAL_COL), errors="coerce").fillna(0).astype(int)
-    df[OMZET_COL] = df[HARGA_COL] * df[TERJUAL_COL]
-    
-    # Tampilkan preview pertama
-    with placeholder.container():
-        st.info("⚙️ Data setelah dibersihkan dan Omzet dihitung:")
-        st.dataframe(df.head(), use_container_width=True)
-    time.sleep(2) # Beri jeda agar pengguna sempat melihat
-
-    # Tahap 2: Labeling Brand
-    placeholder.info("🏷️ Memulai proses labeling brand...")
-    df = label_brands(df, brand_db, kamus_brand)
-    
-    # Tampilkan preview kedua dengan kolom BRAND
-    with placeholder.container():
-        st.info("🏷️ Data setelah labeling brand selesai:")
-        st.dataframe(df.head(), use_container_width=True)
-    time.sleep(2)
-
-    # Tahap 3: Pemetaan Kategori
-    placeholder.info("🗂️ Memulai proses pemetaan kategori...")
-    df = map_categories(df, db_kategori)
-    
-    # Tampilkan preview ketiga dengan kolom KATEGORI
-    with placeholder.container():
-        st.info("🗂️ Data setelah pemetaan kategori selesai:")
-        st.dataframe(df.head(), use_container_width=True)
-    time.sleep(2)
-
-    st.success("Semua proses pengolahan data selesai!")
-    return df
-
-def label_brands(df: pd.DataFrame, brand_db: List[str], kamus_brand: Dict[str, str], fuzzy_threshold: int = 88):
-    """
-    Melabeli brand pada nama produk menggunakan logika 3 tahap yang dioptimalkan.
-    Versi ini sudah diperbaiki untuk menangani brand yang menyatu dan fuzzy matching yang lebih baik.
-    """
-    # Mengurutkan DB brand dari yang terpanjang agar tidak salah cocok (misal: "ASUS ROG" vs "ASUS")
-    brand_db_sorted = sorted([b for b in brand_db if isinstance(b, str)], key=len, reverse=True)
-
-    # Pra-kompilasi pola RegEx yang lebih fleksibel (tidak mewajibkan spasi di akhir)
-    alias_patterns = [
-        (re.compile(rf"\\b{re.escape(str(alias).upper())}"), str(main).upper())
-        for alias, main in kamus_brand.items()
-    ]
-    brand_patterns = [
-        (re.compile(rf"\\b{re.escape(b.upper())}"), b)
-        for b in brand_db_sorted
-    ]
-
-    # Cache internal untuk menyimpan hasil agar tidak menganalisis nama produk yang sama berulang kali
-    name_cache: Dict[str, str] = {}
-
-    def _find_brand(name_upper: str) -> str:
-        # Prioritas 1: Pencocokan dengan Kamus Alias (paling akurat)
-        for pat, main_brand in alias_patterns:
-            if pat.search(name_upper):
-                return main_brand
-        
-        # Prioritas 2: Pencocokan dengan Database Brand
-        for pat, brand in brand_patterns:
-            if pat.search(name_upper):
-                return brand
-        
-        # Prioritas 3: Fuzzy Matching yang Ditingkatkan (per kata)
-        product_words = set(re.split(r'[^A-Z0-9]+', name_upper)) # Pecah nama produk jadi kata
-        best_match = process.extractOne(name_upper, brand_db_sorted, scorer=fuzz.token_set_ratio)
-        
-        # Cari kecocokan terbaik dari setiap kata
-        best_word_match = None
-        highest_score = 0
-        
-        for word in product_words:
-            if len(word) > 3: # Hanya cek kata yang cukup panjang
-                match, score = process.extractOne(word, brand_db_sorted)
-                if score > highest_score:
-                    highest_score = score
-                    best_word_match = match
-
-        # Jika kecocokan per kata lebih baik dari kecocokan seluruh kalimat, gunakan itu
-        if highest_score > (best_match[1] if best_match else 0) and highest_score > 80:
-            return best_word_match
-        
-        # Jika tidak, gunakan kecocokan dari seluruh kalimat jika skornya cukup bagus
-        if best_match and best_match[1] > fuzzy_threshold:
-            return best_match[0]
-
-        return "TIDAK DIKETAHUI"
-
-    # Loop utama untuk menerapkan fungsi _find_brand ke setiap baris produk
-    brands = []
-    for product_name in df[NAMA_PRODUK_COL].astype(str):
-        upper_name = product_name.upper()
-        if upper_name in name_cache:
-            brands.append(name_cache[upper_name])
-        else:
-            found_brand = _find_brand(upper_name)
-            name_cache[upper_name] = found_brand
-            brands.append(found_brand)
-
-    df[BRAND_COL] = brands
-    return df
-
-@st.cache_data(show_spinner="Memetakan kategori produk...")
-def map_categories(_df: pd.DataFrame, _db_kategori: pd.DataFrame):
-    """
-    Memetakan setiap produk ke kategori yang paling sesuai dari database
-    menggunakan fuzzy matching.
-    """
-    df_copy = _df.copy()
-    df_copy[KATEGORI_COL] = "Lainnya" # Default kategori
-    
-    # Cek jika database kategori valid
-    if _db_kategori.empty or "NAMA" not in _db_kategori.columns or "KATEGORI" not in _db_kategori.columns:
-        return df_copy
-
-    # Siapkan data untuk pencocokan
-    db_map = _db_kategori.set_index("NAMA")["KATEGORI"]
-    
-    # Terapkan pemetaan kategori
-    for idx, row in df_copy.iterrows():
-        product_name = str(row.get(NAMA_PRODUK_COL, ""))
-        if product_name:
-            # Cari nama produk di database yang paling mirip
-            match, score = process.extractOne(product_name, db_map.index, scorer=fuzz.token_set_ratio)
-            # Jika tingkat kemiripan tinggi, petakan kategorinya
-            if score >= 95:
-                df_copy.at[idx, KATEGORI_COL] = db_map[match]
-                
-    return df_copy
-
-# =====================================================================================
-# Bagian 5: Fungsi-fungsi Tampilan (Frontend)
-# Semua fungsi yang berhubungan dengan antarmuka pengguna (UI) dan visualisasi.
-# =====================================================================================
-
-# --- Fungsi Bantuan untuk UI (UI Helper Functions) ---
-
-def format_harga(x):
-    """Mengubah angka menjadi format mata uang Rupiah."""
-    if pd.isnull(x): return "N/A"
-    return f"Rp {float(x):,.0f}"
-
-def format_wow_growth(pct_change):
-    """Memberi ikon ▲/▼ pada persentase pertumbuhan mingguan."""
-    if pd.isna(pct_change) or pct_change == float("inf"): return "N/A"
-    if pct_change > 0.001: return f"▲ {pct_change:.1%}"
-    if pct_change < -0.001: return f"▼ {pct_change:.1%}"
-    return f"▬ 0.0%"
-
-def colorize_growth(val):
-    """Memberi warna hijau/merah pada teks pertumbuhan."""
-    color = "grey"
-    if isinstance(val, str):
-        if "▲" in val: color = "#28a745" # Hijau
-        elif "▼" in val: color = "#dc3545" # Merah
-    return f"color: {color}"
+        st.error(f"Terjadi kesalahan saat memuat data: {e}")
+        return None, None
 
 @st.cache_data
-def convert_df_to_csv(df):
-    """Mengubah DataFrame menjadi CSV untuk di-download."""
-    return df.to_csv(index=False).encode("utf-8")
+def perform_sku_labeling(_df_db_klik, _df_database):
+    """
+    Melakukan pelabelan SKU dan Kategori.
+    Logika argmax() akan SELALU menemukan padanan terbaik (terdekat) berdasarkan skor TF-IDF,
+    sehingga tidak akan menghasilkan nilai kosong atau 'TIDAK DITEMUKAN'.
+    """
+    if 'Nama Produk' not in _df_db_klik.columns or 'NAMA' not in _df_database.columns:
+        st.error("Kolom nama produk tidak ditemukan untuk pelabelan.")
+        return _df_db_klik
 
-# --- Tampilan Mode Koreksi Cerdas (Interactive Batch Correction) ---
+    status_label = st.info("⏳ Memulai proses pelabelan SKU & Kategori...")
+    progress_bar = st.progress(0, text="Mempersiapkan data...")
 
-# =====================================================================================
-# (Letakkan kode ini di Bagian 6: Fungsi-fungsi Tampilan (Frontend))
-# =====================================================================================
+    corpus = pd.concat([
+        _df_database['NAMA'].apply(normalize_text),
+        _df_db_klik['Nama Produk'].apply(normalize_text)
+    ]).unique()
 
-def _tokenize_words_upper(name: str) -> List[str]:
-    """Fungsi bantuan untuk memecah nama produk menjadi kata-kata penting (token)."""
-    up = str(name).upper()
-    # Memisahkan berdasarkan karakter non-alfanumerik
-    tokens = re.split(r'[^A-Z0-9]+', up)
-    # Mengabaikan kata-kata yang terlalu pendek (kurang dari 3 huruf)
-    return [t for t in tokens if len(t) > 2]
+    vectorizer = TfidfVectorizer()
+    vectorizer.fit(corpus)
 
-
-def display_correction_mode(gsheets_service):
-    st.header("🧠 Ruang Kontrol: Perbaikan Data Brand (Interaktif)")
-    st.warning(
-        "Ditemukan produk yang brand-nya tidak dikenali. Mohon ajari sistem satu per satu."
-    )
-
-    df_to_fix = st.session_state.df_to_fix
-    unknown_products = df_to_fix[df_to_fix[BRAND_COL] == "TIDAK DIKETAHUI"]
-
-    # Jika sudah tidak ada lagi yang perlu diperbaiki, simpan otomatis dan beralih ke dasbor
-    if unknown_products.empty:
-        st.success("🎉 Semua brand sudah dikenali! Menyimpan data bersih ke cache...")
-        save_data_to_cache(
-            st.session_state.drive_service,
-            st.session_state.data_olahan_folder_id,
-            CACHE_FILE_NAME,
-            df_to_fix,
-        )
-        st.session_state.mode = "dashboard"
-        st.session_state.master_df = df_to_fix.copy()
-        time.sleep(1)
-        st.rerun()
-        return
-
-    st.info(f"Tersisa **{len(unknown_products)} produk** yang perlu direview.")
+    progress_bar.progress(0.2, text="Membangun matriks TF-IDF...")
     
-    # Ambil produk pertama yang tidak dikenal untuk direview
-    product_to_review = unknown_products.iloc[0]
-    st.divider()
-    st.write("Produk yang direview saat ini:")
-    st.info(f"**{product_to_review[NAMA_PRODUK_COL]}** (dari toko: {product_to_review[TOKO_COL]})")
-
-    # Sistem akan menyarankan alias berdasarkan kata pertama dari nama produk
-    suggested_tokens = _tokenize_words_upper(product_to_review[NAMA_PRODUK_COL])
-    default_alias = suggested_tokens[0] if suggested_tokens else ""
-
-    with st.form(key="review_form_interactive"):
-        st.subheader("1. Apa Brand yang Benar?")
-        col1, col2 = st.columns(2)
-        brand_list = [""] + sorted(st.session_state.brand_db)
-        selected_brand = col1.selectbox("Pilih dari brand yang ada:", options=brand_list)
-        new_brand_input = col2.text_input("Atau, masukkan nama brand BARU:")
-
-        st.subheader("2. Ajari Sistem Alias Baru")
-        alias_input = st.text_input(
-            "Alias untuk mendeteksi brand ini (direkomendasikan):",
-            value=default_alias
-        )
-
-        st.subheader("3. Terapkan Pembelajaran Ini Untuk:")
-        apply_mode = st.radio(
-            "Pilih mode penerapan:",
-            options=[
-                "Hanya untuk produk ini saja",
-                "Semua produk TIDAK DIKENALI yang mengandung alias di atas",
-                "Semua produk TIDAK DIKENALI yang namanya mirip (fuzzy)"
-            ],
-            index=1,
-            help="Gunakan 'mengandung alias' untuk perbaikan massal yang cepat dan akurat."
-        )
-        
-        # Opsi fuzzy matching hanya muncul jika mode-nya dipilih
-        fuzzy_threshold = 85
-        if "mirip (fuzzy)" in apply_mode:
-            fuzzy_threshold = st.slider("Tingkat kemiripan (%):", 80, 100, 90)
-
-        submitted = st.form_submit_button("Ajarkan & Terapkan ke Berikutnya ▶")
-        
-        if submitted:
-            final_brand = new_brand_input.strip().upper() if new_brand_input else selected_brand
-            if not final_brand:
-                st.error("Anda harus memilih atau memasukkan nama brand.")
-                return
-
-            # Proses 1: Simpan brand baru ke Google Sheet jika ada
-            if new_brand_input and final_brand not in st.session_state.brand_db:
-                try:
-                    sheet = gsheets_service.open_by_key(SPREADSHEET_ID).worksheet(DB_SHEET_NAME)
-                    sheet.append_row([final_brand])
-                    st.session_state.brand_db.append(final_brand)
-                    st.toast(f"Brand baru '{final_brand}' ditambahkan ke database.", icon="➕")
-                    
-                    # BARU: Buang cache 'otak' yang lama agar data baru bisa dibaca
-                    load_intelligence_data.clear() 
-                    
-                except Exception as e: st.error(f"Gagal menyimpan brand baru: {e}")
-
-            # Proses 2: Simpan alias baru ke Google Sheet jika diisi
-            alias_to_save = alias_input.strip().upper()
-            if alias_to_save:
-                try:
-                    sheet = gsheets_service.open_by_key(SPREADSHEET_ID).worksheet(KAMUS_SHEET_NAME)
-                    sheet.append_row([alias_to_save, final_brand])
-                    st.toast(f"Alias '{alias_to_save}' disimpan.", icon="📚")
-                    
-                    # BARU: Buang cache 'otak' yang lama agar data baru bisa dibaca
-                    load_intelligence_data.clear()
-                    
-                except Exception as e: st.error(f"Gagal menyimpan alias: {e}")
-        
-            # --- PROSES PENERAPAN BATCH ---
-            # 3. Tentukan baris mana saja yang akan diupdate
-            indices_to_update = set()
-            indices_to_update.add(product_to_review.name) # Selalu update produk saat ini
-
-            unknown_df_subset = df_to_fix[df_to_fix[BRAND_COL] == "TIDAK DIKETAHUI"]
-
-            if "mengandung alias" in apply_mode and alias_to_save:
-                mask = unknown_df_subset[NAMA_PRODUK_COL].str.upper().str.contains(re.escape(alias_to_save), na=False)
-                indices_to_update.update(unknown_df_subset[mask].index)
-
-            elif "mirip (fuzzy)" in apply_mode:
-                base_name = product_to_review[NAMA_PRODUK_COL]
-                for idx, row in unknown_df_subset.iterrows():
-                    score = fuzz.token_set_ratio(base_name, row[NAMA_PRODUK_COL])
-                    if score >= fuzzy_threshold:
-                        indices_to_update.add(idx)
-            
-            # 4. Terapkan brand baru ke semua baris yang terpilih
-            st.session_state.df_to_fix.loc[list(indices_to_update), BRAND_COL] = final_brand
-            st.success(f"Berhasil mengupdate brand '{final_brand}' ke **{len(indices_to_update)} produk**.")
-            
-            time.sleep(1)
-            st.rerun()
-
-# --- Tampilan Dasbor Utama (Multi-halaman) ---
-
-def display_main_dashboard(df):
-    st.sidebar.header("Navigasi Halaman")
-    page = st.sidebar.radio("Pilih Halaman:", ["📈 Ringkasan Eksekutif", "🔍 Analisis Mendalam"])
-    st.sidebar.divider()
-
-    st.sidebar.header("Filter Global")
-    # Filter Rentang Tanggal
-    min_date, max_date = df[TANGGAL_COL].min().date(), df[TANGGAL_COL].max().date()
-    selected_date_range = st.sidebar.date_input("Rentang Tanggal:", [min_date, max_date])
-
-    if len(selected_date_range) != 2: st.stop()
-    start_date, end_date = selected_date_range
-    df_filtered = df[(df[TANGGAL_COL].dt.date >= start_date) & (df[TANGGAL_COL].dt.date <= end_date)]
-
-    # --- Halaman 1: Ringkasan Eksekutif ---
-    if page == "📈 Ringkasan Eksekutif":
-        st.header("Ringkasan Eksekutif")
-        latest_date = df_filtered[TANGGAL_COL].max()
-        st.markdown(f"Menampilkan data terbaru per tanggal **{latest_date.strftime('%d %B %Y')}**")
-
-        df_latest = df_filtered[df_filtered[TANGGAL_COL] == latest_date]
-        
-        # Metrik Utama
-        total_omzet = df_latest[OMZET_COL].sum()
-        total_unit = df_latest[TERJUAL_COL].sum()
-        total_produk = df_latest[NAMA_PRODUK_COL].nunique()
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Omzet (Hari Ini)", format_harga(total_omzet))
-        col2.metric("Total Unit Terjual (Hari Ini)", f"{total_unit:,.0f}")
-        col3.metric("Jumlah Produk Unik (Hari Ini)", f"{total_produk:,.0f}")
-
-        st.divider()
-
-        # Visualisasi
-        st.subheader("Perbandingan Omzet per Toko (Data Terbaru)")
-        omzet_per_store = df_latest.groupby(TOKO_COL)[OMZET_COL].sum().sort_values(ascending=False).reset_index()
-        fig_bar = px.bar(omzet_per_store, x=TOKO_COL, y=OMZET_COL, title=f"Total Omzet per Toko", text_auto=True)
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-        st.subheader("Tabel Pertumbuhan Omzet Mingguan per Toko (%)")
-        df_filtered['Minggu'] = df_filtered[TANGGAL_COL].dt.to_period('W-SUN').apply(lambda p: p.start_time).dt.date
-        weekly_pivot = df_filtered.groupby(['Minggu', TOKO_COL])[OMZET_COL].sum().unstack().pct_change()
-        st.dataframe(weekly_pivot.style.format(format_wow_growth).applymap(colorize_growth), use_container_width=True)
-
-    # --- Halaman 2: Analisis Mendalam ---
-    elif page == "🔍 Analisis Mendalam":
-        st.header("Analisis Mendalam")
-        
-        # Filter tambahan khusus halaman ini
-        all_stores = sorted(df_filtered[TOKO_COL].unique())
-        selected_store = st.sidebar.selectbox("Pilih Toko untuk Dianalisis:", all_stores)
-
-        df_store_filtered = df_filtered[df_filtered[TOKO_COL] == selected_store]
-
-        tab1, tab2, tab3 = st.tabs(["🏆 Kinerja Brand", "📦 Analisis Produk", "📊 Analisis Kategori"])
-
-        with tab1:
-            st.subheader(f"Kinerja Brand di Toko {selected_store}")
-            brand_performance = df_store_filtered.groupby(BRAND_COL).agg(
-                Total_Omzet=(OMZET_COL, 'sum'),
-                Jumlah_Produk=(NAMA_PRODUK_COL, 'nunique')
-            ).sort_values("Total_Omzet", ascending=False).reset_index()
-
-            fig_treemap = px.treemap(brand_performance, path=[px.Constant(selected_store), BRAND_COL], values='Total_Omzet', title="Peta Omzet Brand")
-            st.plotly_chart(fig_treemap, use_container_width=True)
-
-        with tab2:
-            st.subheader(f"Produk Terlaris di Toko {selected_store}")
-            top_products = df_store_filtered.sort_values(TERJUAL_COL, ascending=False).head(20)
-            st.dataframe(top_products[[NAMA_PRODUK_COL, HARGA_COL, TERJUAL_COL, OMZET_COL, BRAND_COL, KATEGORI_COL]], use_container_width=True)
-            
-        with tab3:
-            st.subheader(f"Kinerja Kategori di Toko {selected_store}")
-            category_performance = df_store_filtered.groupby(KATEGORI_COL)[OMZET_COL].sum().sort_values(ascending=False).reset_index()
-            fig_pie = px.pie(category_performance, names=KATEGORI_COL, values=OMZET_COL, title="Distribusi Omzet per Kategori")
-            st.plotly_chart(fig_pie, use_container_width=True)
-            
-# =====================================================================================
-# Bagian 6: Alur Kerja Utama Aplikasi (Main Flow)
-# Bagian ini adalah "sutradara" yang mengontrol logika utama aplikasi.
-# =====================================================================================
-
-st.title("📊 Dasbor Analisis Penjualan & Kompetitor")
-st.markdown("Sebuah aplikasi cerdas untuk mengubah data mentah menjadi wawasan bisnis.")
-
-# --- Inisialisasi Session State ---
-# `setdefault` hanya akan mengatur nilai jika kunci tersebut belum ada.
-# Ini penting agar state tidak ter-reset setiap kali ada interaksi.
-st.session_state.setdefault("mode", "initial")
-st.session_state.setdefault("master_df", pd.DataFrame())
-st.session_state.setdefault("df_to_fix", pd.DataFrame())
-st.session_state.setdefault("brand_db", [])
-st.session_state.setdefault("drive_service", None)
-st.session_state.setdefault("gsheets_service", None)
-st.session_state.setdefault("data_olahan_folder_id", None)
-
-# --- Tombol Pemicu Utama di Sidebar ---
-st.sidebar.header("Kontrol Utama")
-st.sidebar.info(
-    "Proses akan sangat cepat jika cache cerdas sudah ada di Google Drive."
-)
-if st.sidebar.button("🚀 Tarik & Proses Data Terbaru", type="primary"):
+    db_vectors = vectorizer.transform(_df_database['NAMA'].apply(normalize_text))
+    target_vectors = vectorizer.transform(_df_db_klik['Nama Produk'].apply(normalize_text))
     
-    # BARU: Buat sebuah placeholder kosong ("papan tulis") di awal proses
-    status_placeholder = st.empty()
+    progress_bar.progress(0.4, text="Menghitung kemiripan kosinus...")
 
-    with st.spinner("Memulai proses... Menghubungkan ke Google API..."):
-        # Langkah 1: Otentikasi dan siapkan koneksi
-        drive_service, gsheets_service = get_google_apis()
-        st.session_state.drive_service = drive_service
-        st.session_state.gsheets_service = gsheets_service
+    similarity_matrix = cosine_similarity(target_vectors, db_vectors)
+    
+    best_matches_indices = similarity_matrix.argmax(axis=1)
+    
+    new_skus = []
+    new_kategoris = []
+    total_rows = len(_df_db_klik)
 
-        # Langkah 2: Cari folder data mentah & olahan
-        data_mentah_folder_id = find_folder_id(drive_service, PARENT_FOLDER_ID, DATA_MENTAH_FOLDER_NAME)
-        data_olahan_folder_id = find_folder_id(drive_service, PARENT_FOLDER_ID, DATA_OLAHAN_FOLDER_NAME)
-        st.session_state.data_olahan_folder_id = data_olahan_folder_id # Simpan untuk nanti
-
-    with st.spinner("Memeriksa status cache cerdas di Google Drive..."):
-        # Langkah 3: Cek apakah cache sudah ada
-        cache_file_info = check_cache_exists(drive_service, data_olahan_folder_id, CACHE_FILE_NAME)
-
-    # Langkah 4: Tentukan alur kerja berdasarkan keberadaan cache
-    if cache_file_info:
-        # --- JALUR CEPAT (CACHE DITEMUKAN) ---
-        st.toast("Cache cerdas ditemukan! Memuat data...", icon="⚡")
-        df = load_data_from_cache(drive_service, cache_file_info[0]["id"])
-        st.session_state.master_df = df
-        st.session_state.mode = "dashboard"
-        st.success("Data dari cache berhasil dimuat!")
-
-    else:
-        # --- JALUR BERAT (CACHE TIDAK DITEMUKAN, PROSES DARI AWAL) ---
-        st.toast("Cache cerdas tidak ditemukan. Memulai proses dari awal...", icon="⚙️")
+    for i, target_idx in enumerate(range(total_rows)):
+        db_idx = best_matches_indices[target_idx]
+        new_skus.append(_df_database.iloc[db_idx]['SKU'])
+        new_kategoris.append(_df_database.iloc[db_idx]['KATEGORI'])
         
-        # Muat data "otak"
-        brand_db, kamus_brand, db_kategori = load_intelligence_data(gsheets_service, SPREADSHEET_ID)
-        st.session_state.brand_db = brand_db # Simpan DB brand untuk mode koreksi
+        if (i + 1) % 100 == 0 or (i + 1) == total_rows:
+            progress_percentage = 0.6 + (0.4 * ((i + 1) / total_rows))
+            progress_bar.progress(progress_percentage, text=f"Melabeli produk {i+1}/{total_rows}...")
 
-        # Ambil semua data mentah dari semua folder toko
-        raw_df = get_raw_data_from_drive(drive_service, data_mentah_folder_id)
+    _df_db_klik['SKU'] = new_skus
+    _df_db_klik['KATEGORI'] = new_kategoris
+    
+    progress_bar.empty()
+    status_label.success("✅ Proses pelabelan SKU & Kategori selesai!")
+    
+    return _df_db_klik
 
-        if raw_df.empty:
-            st.warning("Tidak ada data mentah valid yang bisa diproses.")
-            st.session_state.mode = "initial"
-        else:
-            # Olah data mentah menjadi data bersih
-            processed_df = process_raw_data(raw_df, brand_db, kamus_brand, db_kategori, status_placeholder)
+@st.cache_data
+def precompute_similarity_matrix(_df_my_store, _df_competitor):
+    """Pra-komputasi matriks kemiripan untuk optimasi kecepatan."""
+    similarity_data = {}
+    all_brands = _df_my_store['BRAND'].dropna().unique()
 
-            # BARU: Panggil fungsi "Stempel Cerdas" untuk mengupdate file CSV sumber
-            update_source_csvs(drive_service, processed_df)
+    progress_bar = st.progress(0, text="Mempersiapkan pra-komputasi kemiripan...")
 
-            # GERBANG KUALITAS DATA: Cek apakah ada brand yang tidak dikenali
-            unknown_brands_count = (processed_df[BRAND_COL] == "TIDAK DIKETAHUI").sum()
+    for i, brand in enumerate(all_brands):
+        progress_bar.progress((i + 1) / len(all_brands), text=f"Menganalisis brand: {brand}...")
 
-            if unknown_brands_count > 0:
-                # Jika ada, masuk ke mode koreksi
-                st.warning(f"Ditemukan {unknown_brands_count} produk yang brand-nya perlu diperbaiki.")
-                st.session_state.df_to_fix = processed_df
-                st.session_state.mode = "correction"
-            else:
-                # Jika semua bersih, simpan ke cache dan tampilkan dasbor
-                st.success("Data berhasil diolah dan semua brand dikenali!")
-                save_data_to_cache(drive_service, data_olahan_folder_id, CACHE_FILE_NAME, processed_df)
-                st.session_state.master_df = processed_df
-                st.session_state.mode = "dashboard"
+        my_store_brand = _df_my_store[_df_my_store['BRAND'] == brand]
+        competitor_brand = _df_competitor[_df_competitor['BRAND'] == brand]
+
+        if my_store_brand.empty or competitor_brand.empty:
+            continue
+
+        corpus = pd.concat([
+            my_store_brand['Nama Produk'].apply(normalize_text),
+            competitor_brand['Nama Produk'].apply(normalize_text)
+        ])
+        
+        vectorizer = TfidfVectorizer()
+        tfidf_matrix = vectorizer.fit_transform(corpus)
+        
+        my_store_vectors = tfidf_matrix[:len(my_store_brand)]
+        competitor_vectors = tfidf_matrix[len(my_store_brand):]
+        
+        cosine_sim = cosine_similarity(my_store_vectors, competitor_vectors)
+
+        similarity_data[brand] = {
+            'matrix': cosine_sim,
+            'my_store_indices': my_store_brand.index.tolist(),
+            'competitor_indices': competitor_brand.index.tolist()
+        }
+    
+    progress_bar.empty()
+    return similarity_data
+
+def to_excel(df_dict):
+    """Mengonversi dictionary of dataframes menjadi file Excel di memori."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for sheet_name, df in df_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+    processed_data = output.getvalue()
+    return processed_data
+
+# ===================================================================================
+# INISIALISASI APLIKASI
+# ===================================================================================
+st.title("🧠 Mesin Analisis Kompetitor Cerdas")
+st.markdown("Selamat datang di dasbor analisis kompetitor. Aplikasi ini memuat data secara otomatis saat pertama kali dijalankan.")
+
+if 'labeling_needed' not in st.session_state:
+    st.session_state.labeling_needed = False
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+if 'all_data' not in st.session_state:
+    st.session_state.all_data = pd.DataFrame()
+if 'db_data' not in st.session_state:
+    st.session_state.db_data = pd.DataFrame()
+if 'similarity_data' not in st.session_state:
+    st.session_state.similarity_data = None
+
+if not st.session_state.data_loaded:
+    with st.spinner("Memuat data awal... Ini mungkin memakan waktu beberapa saat."):
+        client = get_google_sheets_connection()
+        if client:
+            all_data, db_data = load_data_from_gsheets(client, st.secrets["SOURCE_SPREADSHEET_ID"])
+            if all_data is not None and db_data is not None:
+                st.session_state.all_data = all_data
+                st.session_state.db_data = db_data
+                st.session_state.data_loaded = True
                 
-    # BARU: Setelah semua proses selesai, bersihkan "papan tulis"
-    status_placeholder.empty()
+                df_db_klik = all_data[all_data['Toko'] == 'DB KLIK'].copy()
+                if 'SKU' not in df_db_klik.columns or df_db_klik['SKU'].isnull().sum() > 0.1 * len(df_db_klik):
+                     st.session_state.labeling_needed = True
+                st.rerun() 
+        else:
+            st.error("Koneksi ke Google Sheets tidak dapat dibuat. Aplikasi tidak dapat melanjutkan.")
+            st.stop()
+
+if not st.session_state.data_loaded:
+    st.warning("Data belum berhasil dimuat. Mohon periksa koneksi dan konfigurasi secrets.")
+    st.stop()
     
-    # Langkah 5: Jalankan ulang skrip untuk menampilkan UI yang sesuai
+if st.session_state.labeling_needed:
+    st.warning("🚨 **PELABELAN DIPERLUKAN** 🚨\n\nTerdeteksi data SKU dan KATEGORI untuk toko **DB KLIK** tidak sinkron atau belum ada. Silakan jalankan proses pelabelan untuk melanjutkan analisis.")
+    if st.button("MULAI PELABELAN SKU DAN KATEGORI", type="primary"):
+        with st.spinner("Harap tunggu, proses pelabelan sedang berjalan..."):
+            all_data_temp = st.session_state.all_data.copy()
+            df_db_klik = all_data_temp[all_data_temp['Toko'] == 'DB KLIK'].copy()
+            df_others = all_data_temp[all_data_temp['Toko'] != 'DB KLIK'].copy()
+            df_db_klik_labeled = perform_sku_labeling(df_db_klik, st.session_state.db_data)
+            st.session_state.all_data = pd.concat([df_db_klik_labeled, df_others], ignore_index=True)
+            st.session_state.labeling_needed = False
+            st.success("Pelabelan selesai!")
+            st.rerun()
+    st.stop()
+
+# ===================================================================================
+# SIDEBAR (Filter dan Navigasi)
+# ===================================================================================
+st.sidebar.header("⚙️ Filter & Opsi")
+all_data = st.session_state.all_data
+db_data = st.session_state.db_data
+
+min_date = all_data['TANGGAL'].min().date()
+max_date = all_data['TANGGAL'].max().date()
+
+start_date, end_date = st.sidebar.date_input(
+    'Pilih Rentang Tanggal',
+    value=(min_date, max_date),
+    min_value=min_date,
+    max_value=max_date,
+    help="Pilih rentang tanggal untuk dianalisis."
+)
+
+start_datetime = pd.to_datetime(start_date)
+end_datetime = pd.to_datetime(end_date)
+filtered_data = all_data[(all_data['TANGGAL'] >= start_datetime) & (all_data['TANGGAL'] <= end_datetime)].copy()
+
+st.sidebar.info(
+    f"""
+    📅 Data dari: **{min_date.strftime('%d %b %Y')}**
+    📅 Hingga: **{max_date.strftime('%d %b %Y')}**
+    ---
+    **{len(filtered_data)}** baris data dianalisis.
+    """
+)
+
+if st.sidebar.button("Jalankan Ulang Pelabelan"):
+    st.session_state.labeling_needed = True
+    st.session_state.similarity_data = None 
     st.rerun()
 
-# --- Logika Tampilan Berdasarkan Mode Aplikasi (Saklar Utama) ---
-st.divider()
+excel_data = to_excel({
+    'Data Gabungan Terfilter': filtered_data,
+    'Database Produk': db_data
+})
+st.sidebar.download_button(
+    label="📥 Unduh Data (Excel)",
+    data=excel_data,
+    file_name=f"analisis_data_{start_date}_sd_{end_date}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
 
-if st.session_state.mode == "initial":
-    st.info("👈 Silakan klik tombol **'Tarik & Proses Data Terbaru'** di sidebar untuk memulai analisis.")
-    st.image("https://storage.googleapis.com/gweb-cloudblog-publish/images/Google_Drive_logo.max-2200x2200.png", width=150)
-    st.subheader("Struktur Folder yang Diharapkan di Google Drive:")
-    st.code(
-        f"""
-{PARENT_FOLDER_ID}/ (Folder Induk)
-|
-|-- 📂 {DATA_MENTAH_FOLDER_NAME}/
-|   |-- 📂 NAMA_TOKO_1/
-|   |   |-- 📜 2025-08-12-ready.csv
-|   |   `-- ...
-|   `-- 📂 NAMA_TOKO_2/
-|
-`-- 📂 {DATA_OLAHAN_FOLDER_NAME}/
-    `-- (Folder ini akan diisi otomatis oleh cache)
-        """, language="text")
+st.sidebar.header("Pilih Analisis")
+analysis_choice = st.sidebar.radio(
+    "Menu Analisis:",
+    ["ANALISIS UTAMA", "HPP PRODUK", "SIMILARITY PRODUK"],
+    captions=["Dasbor umum & performa toko", "Bandingkan harga jual vs HPP", "Cari produk serupa antar toko"]
+)
 
-elif st.session_state.mode == "correction":
-    display_correction_mode(st.session_state.gsheets_service)
+# ===================================================================================
+# KONTEN UTAMA APLIKASI
+# ===================================================================================
+if analysis_choice == "ANALISIS UTAMA":
+    st.header("📊 Analisis Utama")
+    tab1, tab2, tab3 = st.tabs([
+        "📈 Analisis DB KLIK",
+        "🌍 Analisis Kompetitor",
+        "🔄 Perbandingan Produk Baru & Habis"
+    ])
+    
+    with tab1:
+        df_db_klik_filtered = filtered_data[filtered_data['Toko'] == 'DB KLIK'].copy()
+        if df_db_klik_filtered.empty:
+            st.warning("Tidak ada data DB KLIK pada rentang tanggal yang dipilih.")
+        else:
+            st.subheader("Performance Kategori Produk DB KLIK")
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                top_n = st.slider("Jumlah Kategori Tampil", 5, 20, 10)
+                sort_order = st.radio("Urutkan Berdasarkan Omzet", ["Tertinggi", "Terendah"])
+                
+                kategori_omzet = df_db_klik_filtered.groupby('KATEGORI')['Omzet'].sum().reset_index()
+                is_desc = sort_order == "Tertinggi"
+                kategori_omzet_sorted = kategori_omzet.sort_values('Omzet', ascending=not is_desc).head(top_n)
 
-elif st.session_state.mode == "dashboard":
-    if not st.session_state.master_df.empty:
-        display_main_dashboard(st.session_state.master_df)
+                fig_kat = px.bar(
+                    kategori_omzet_sorted, 
+                    x='Omzet', y='KATEGORI', orientation='h',
+                    title=f'Top {top_n} Kategori dengan Omzet {sort_order}',
+                    labels={'Omzet': 'Total Omzet', 'KATEGORI': 'Kategori'},
+                    text_auto=True
+                )
+                fig_kat.update_traces(texttemplate='%{x:,.0f}', textposition='outside')
+                fig_kat.update_layout(yaxis={'categoryorder':'total ascending' if is_desc else 'total descending'})
+                st.plotly_chart(fig_kat, use_container_width=True)
+            
+            with col2:
+                st.dataframe(
+                    kategori_omzet.sort_values('Omzet', ascending=False).style.format({'Omzet': format_rupiah}),
+                    use_container_width=True,
+                    height=400
+                )
+
+            st.divider()
+            
+            # --- BAGIAN WOW GROWTH BARU ---
+            st.subheader("Analisis Pertumbuhan Week-over-Week (WoW)")
+            df_db_wow = df_db_klik_filtered[['TANGGAL', 'Omzet', 'TERJUAL/BLN']].copy()
+            df_db_wow = df_db_wow.set_index('TANGGAL')
+            
+            # Resample data per minggu, dimulai hari Senin
+            weekly_summary = df_db_wow.resample('W-MON').agg({
+                'Omzet': 'sum',
+                'TERJUAL/BLN': 'sum'
+            }).rename(columns={'TERJUAL/BLN': 'Total Unit Terjual'})
+            
+            # Hitung persentase pertumbuhan
+            weekly_summary['Pertumbuhan Omzet (WoW)'] = weekly_summary['Omzet'].pct_change()
+            weekly_summary.fillna(0, inplace=True)
+            
+            def style_growth(val):
+                """Memberi warna pada sel berdasarkan nilai positif atau negatif."""
+                if val > 0:
+                    return 'color: green'
+                elif val < 0:
+                    return 'color: red'
+                else:
+                    return 'color: gray'
+            
+            st.dataframe(
+                weekly_summary.style
+                .format({
+                    'Omzet': format_rupiah,
+                    'Total Unit Terjual': '{:,.0f}',
+                    'Pertumbuhan Omzet (WoW)': '{:,.2%}'
+                })
+                .apply(lambda x: x.map(style_growth), subset=['Pertumbuhan Omzet (WoW)']),
+                use_container_width=True
+            )
+            # --- AKHIR BAGIAN WOW GROWTH BARU ---
+
+            st.divider()
+            st.subheader("Analisis Brand Teratas (Berdasarkan Omzet Terbaru)")
+            latest_date_db = df_db_klik_filtered['TANGGAL'].max()
+            df_latest_brand = df_db_klik_filtered[df_db_klik_filtered['TANGGAL'] == latest_date_db]
+            brand_omzet = df_latest_brand.groupby('BRAND').agg(
+                Total_Omzet=('Omzet', 'sum'),
+                Total_Unit_Terjual=('TERJUAL/BLN', 'sum')
+            ).reset_index().sort_values('Total_Omzet', ascending=False)
+            col_pie, col_table = st.columns(2)
+            with col_pie:
+                top_6_brands = brand_omzet.head(6)
+                fig_pie = px.pie(
+                    top_6_brands, values='Total_Omzet', names='BRAND',
+                    title='Persentase Omzet 6 Brand Teratas', hole=0.4
+                )
+                fig_pie.update_traces(textinfo='percent+label', pull=[0.05]*6)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            with col_table:
+                st.write("Ringkasan Data Brand")
+                st.dataframe(
+                    brand_omzet.style.format({'Total_Omzet': format_rupiah, 'Total_Unit_Terjual': '{:,.0f}'}),
+                    use_container_width=True, height=300
+                )
+                
+            st.divider()
+            st.subheader("Produk Terlaris Global (Periode Terpilih)")
+            produk_terlaris = df_db_klik_filtered.sort_values('Omzet', ascending=False).head(20)
+            st.dataframe(
+                produk_terlaris[['Nama Produk', 'SKU', 'HARGA', 'Omzet']].style.format({'HARGA': format_rupiah, 'Omzet': format_rupiah}),
+                use_container_width=True
+            )
+
+    with tab2:
+        st.subheader("Performa Pendapatan Antar Toko")
+        pendapatan_toko_harian = filtered_data.groupby(['TANGGAL', 'Toko'])['Omzet'].sum().reset_index()
+        fig_line_pendapatan = px.line(
+            pendapatan_toko_harian, x='TANGGAL', y='Omzet', color='Toko',
+            title='Tren Pendapatan Harian Semua Toko',
+            labels={'TANGGAL': 'Tanggal', 'Omzet': 'Total Omzet', 'Toko': 'Nama Toko'}
+        )
+        st.plotly_chart(fig_line_pendapatan, use_container_width=True)
+        
+        st.write("Tabel Nilai Pendapatan Harian (dalam jutaan Rupiah)")
+        pivot_pendapatan = pendapatan_toko_harian.pivot(index='Toko', columns='TANGGAL', values='Omzet').fillna(0)
+        st.dataframe((pivot_pendapatan / 1_000_000).style.format('{:,.2f} Jt'), use_container_width=True)
+        
+        st.divider()
+        st.subheader("Tren Jumlah Produk Ready vs Habis")
+        status_produk = filtered_data.groupby(['TANGGAL', 'Toko', 'Status']).size().reset_index(name='Jumlah')
+        fig_line_status = px.line(
+            status_produk, x='TANGGAL', y='Jumlah', color='Toko', line_dash='Status',
+            title='Jumlah Produk Ready vs Habis per Hari',
+            labels={'TANGGAL': 'Tanggal', 'Jumlah': 'Jumlah Produk'}
+        )
+        st.plotly_chart(fig_line_status, use_container_width=True)
+
+    with tab3:
+        st.subheader("Perbandingan Snapshot Produk Antar Tanggal")
+        all_dates = sorted(filtered_data['TANGGAL'].dt.date.unique())
+        if all_dates:
+            col_tgl1, col_tgl2 = st.columns(2)
+            with col_tgl1:
+                tgl_pembanding = st.selectbox("Pilih Tanggal Pembanding", all_dates, index=0)
+            with col_tgl2:
+                tgl_target = st.selectbox("Pilih Tanggal Target", all_dates, index=len(all_dates)-1)
+            
+            if st.button("Bandingkan Snapshot"):
+                df_pembanding = all_data[all_data['TANGGAL'].dt.date == tgl_pembanding]
+                df_target = all_data[all_data['TANGGAL'].dt.date == tgl_target]
+                for toko in all_data['Toko'].unique():
+                    with st.expander(f"Laporan untuk: **{toko}**"):
+                        produk_pembanding = set(df_pembanding[df_pembanding['Toko'] == toko]['Nama Produk'])
+                        produk_target = set(df_target[df_target['Toko'] == toko]['Nama Produk'])
+                        produk_baru = produk_target - produk_pembanding
+                        produk_hilang = produk_pembanding - produk_target
+                        st.metric(label="Total Produk Pembanding", value=len(produk_pembanding))
+                        st.metric(label="Total Produk Target", value=len(produk_target))
+                        col_baru, col_hilang = st.columns(2)
+                        with col_baru:
+                            st.success(f"Produk Baru Ditemukan: {len(produk_baru)}")
+                            if produk_baru:
+                                st.dataframe(pd.DataFrame(list(produk_baru), columns=["Nama Produk"]), height=200)
+                        with col_hilang:
+                            st.error(f"Produk Tidak Lagi Ditemukan: {len(produk_hilang)}")
+                            if produk_hilang:
+                                st.dataframe(pd.DataFrame(list(produk_hilang), columns=["Nama Produk"]), height=200)
+
+elif analysis_choice == "HPP PRODUK":
+    st.header("⚖️ Analisis Harga Pokok Penjualan (HPP)")
+    df_db_klik_all = all_data[all_data['Toko'] == 'DB KLIK'].copy()
+    if df_db_klik_all.empty:
+        st.warning("Tidak ada data DB KLIK untuk dianalisis.")
     else:
-        st.error("Gagal memuat data master. Silakan coba tarik data kembali.")
-        st.session_state.mode = "initial"
+        latest_date_hpp = df_db_klik_all['TANGGAL'].max()
+        df_db_klik_latest = df_db_klik_all[df_db_klik_all['TANGGAL'] == latest_date_hpp].copy()
+        db_data_hpp = db_data[['SKU', 'HPP (LATEST)']].copy()
+        db_data_hpp['HPP (LATEST)'] = pd.to_numeric(db_data_hpp['HPP (LATEST)'], errors='coerce').fillna(0)
+        merged_hpp = pd.merge(df_db_klik_latest, db_data_hpp, on='SKU', how='left')
+        merged_hpp = merged_hpp[merged_hpp['HPP (LATEST)'] > 0] 
+        produk_lebih_mahal = merged_hpp[merged_hpp['HARGA'] < merged_hpp['HPP (LATEST)']]
+        produk_lebih_murah = merged_hpp[merged_hpp['HARGA'] > merged_hpp['HPP (LATEST)']]
+        st.subheader("Produk dengan Harga Jual di Bawah HPP Terbaru")
+        st.warning(f"Ditemukan **{len(produk_lebih_mahal)}** produk yang berpotensi merugi.")
+        if not produk_lebih_mahal.empty:
+            st.dataframe(
+                produk_lebih_mahal[['Nama Produk', 'SKU', 'HARGA', 'HPP (LATEST)', 'Status']].style.format({'HARGA': format_rupiah, 'HPP (LATEST)': format_rupiah}), 
+                use_container_width=True
+            )
+        st.subheader("Produk dengan Harga Jual di Atas HPP Terbaru")
+        st.success(f"Ditemukan **{len(produk_lebih_murah)}** produk yang menguntungkan.")
+        if not produk_lebih_murah.empty:
+            st.dataframe(
+                produk_lebih_murah[['Nama Produk', 'SKU', 'HARGA', 'HPP (LATEST)', 'Status']].style.format({'HARGA': format_rupiah, 'HPP (LATEST)': format_rupiah}), 
+                use_container_width=True
+            )
+
+elif analysis_choice == "SIMILARITY PRODUK":
+    st.header("🤝 Analisis Kemiripan Produk (TF-IDF)")
+    
+    latest_date_sim = all_data['TANGGAL'].max()
+    df_latest = all_data[all_data['TANGGAL'] == latest_date_sim].copy()
+    
+    df_my_store = df_latest[df_latest['Toko'] == 'DB KLIK'].copy()
+    df_competitor = df_latest[df_latest['Toko'] != 'DB KLIK'].copy()
+
+    if st.session_state.similarity_data is None:
+        with st.spinner("Melakukan pra-komputasi matriks kemiripan untuk semua produk... (satu kali proses)"):
+            st.session_state.similarity_data = precompute_similarity_matrix(df_my_store, df_competitor)
+        st.success("Pra-komputasi selesai! Pencarian sekarang akan sangat cepat.")
+    
+    # --- FILTER BRAND BARU ---
+    brand_list = ['Semua Brand'] + sorted(df_my_store['BRAND'].dropna().unique())
+    selected_brand = st.selectbox(
+        "Filter Berdasarkan Brand:",
+        brand_list
+    )
+    
+    # Filter product list based on selected brand
+    if selected_brand == 'Semua Brand':
+        product_list = sorted(df_my_store['Nama Produk'].unique())
+    else:
+        product_list = sorted(df_my_store[df_my_store['BRAND'] == selected_brand]['Nama Produk'].unique())
+        
+    selected_product_name = st.selectbox(
+        "Pilih produk dari DB KLIK untuk dianalisis:",
+        product_list,
+        index=None,
+        placeholder="Ketik untuk mencari produk..."
+    )
+
+    if selected_product_name:
+        selected_product_info = df_my_store[df_my_store['Nama Produk'] == selected_product_name].iloc[0]
+        
+        st.subheader("Produk Pilihan Anda:")
+        col_info1, col_info2, col_info3 = st.columns(3)
+        col_info1.metric("Harga DB KLIK", format_rupiah(selected_product_info['HARGA']))
+        col_info2.metric("Brand", selected_product_info['BRAND'])
+        col_info3.metric("SKU", selected_product_info['SKU'])
+        st.markdown(f"**Nama Lengkap:** {selected_product_name}")
+        
+        matches = []
+        target_brand = selected_product_info['BRAND']
+        sim_data_brand = st.session_state.similarity_data.get(target_brand)
+
+        if sim_data_brand:
+            try:
+                my_store_product_index_local = sim_data_brand['my_store_indices'].index(selected_product_info.name)
+                scores = sim_data_brand['matrix'][my_store_product_index_local]
+                sorted_competitor_indices = scores.argsort()[::-1]
+                
+                for comp_idx_local in sorted_competitor_indices:
+                    score = scores[comp_idx_local]
+                    if score > 0.5:
+                        original_competitor_index = sim_data_brand['competitor_indices'][comp_idx_local]
+                        match_info = df_competitor.loc[original_competitor_index]
+                        matches.append({
+                            'Toko': match_info['Toko'],
+                            'Nama Produk': match_info['Nama Produk'],
+                            'Harga': match_info['HARGA'],
+                            'Status': match_info['Status'],
+                            'Omzet': match_info['Omzet'],
+                            'Terjual per Bulan': match_info['TERJUAL/BLN'],
+                            'Skor Kemiripan': score * 100
+                        })
+            except ValueError:
+                pass
+
+        st.divider()
+        st.subheader("Hasil Perbandingan di Toko Kompetitor")
+
+        if matches:
+            df_matches = pd.DataFrame(matches)
+            
+            avg_price = df_matches['Harga'].mean()
+            omzet_per_toko = df_matches.groupby('Toko')['Omzet'].sum()
+            
+            if not omzet_per_toko.empty:
+                toko_omzet_tertinggi = omzet_per_toko.idxmax()
+                total_omzet_toko = omzet_per_toko.max()
+            else:
+                toko_omzet_tertinggi = "N/A"
+                total_omzet_toko = 0
+
+            col_sum1, col_sum2, col_sum3 = st.columns(3)
+            col_sum1.metric("Rata-rata Harga Kompetitor", format_rupiah(avg_price))
+            col_sum2.metric("Jumlah Toko Mirip", f"{df_matches['Toko'].nunique()} Toko")
+            col_sum3.metric("Toko Omzet Tertinggi", f"{toko_omzet_tertinggi}", help=f"Total omzet dari produk serupa: {format_rupiah(total_omzet_toko)}")
+
+            # Tampilkan dataframe dengan kolom baru
+            st.dataframe(
+                df_matches.style.format({
+                    'Harga': format_rupiah,
+                    'Omzet': format_rupiah,
+                    'Terjual per Bulan': '{:,.0f}',
+                    'Skor Kemiripan': '{:.2f}%'
+                }).background_gradient(
+                    cmap='viridis', subset=['Skor Kemiripan']
+                ), use_container_width=True
+            )
+        else:
+            st.info("Tidak ditemukan produk yang serupa di toko kompetitor berdasarkan brand dan analisis nama.")
+
