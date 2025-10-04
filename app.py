@@ -130,8 +130,8 @@ def preprocess_data(all_data_list):
         kamus_dict = df_kamus.set_index('Alias')['Brand_Utama'].to_dict()
         master_df['BRAND'] = master_df['BRAND'].replace(kamus_dict)
 
-    # Hapus baris dengan tanggal kosong
-    master_df.dropna(subset=['TANGGAL'], inplace=True)
+    # Hapus baris dengan data krusial yang kosong
+    master_df.dropna(subset=['TANGGAL', 'Toko'], inplace=True)
 
     return master_df, df_database, df_kamus
 
@@ -520,3 +520,4 @@ if st.session_state.data_loaded:
                     col3.metric("Omzet Tertinggi dari", best_omzet_store['Toko'], f"Rp {best_omzet_store['Omzet']:,.0f}")
 
                     st.dataframe(final_matches[['NAMA', 'Toko', 'HARGA', 'Skor Kemiripan', 'Omzet']], use_container_width=True)
+
