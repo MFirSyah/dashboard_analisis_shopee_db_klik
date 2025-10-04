@@ -72,7 +72,7 @@ def get_gspread_client():
     creds_dict = st.secrets["gcp_service_account"]
     creds = Credentials.from_service_account_info(creds_dict)
     scoped_creds = creds.with_scopes([
-        "https://www.googleapis.com/auth/spreadsheets",
+        "https.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ])
     return gspread.authorize(scoped_creds)
@@ -146,54 +146,53 @@ def format_rupiah(amount: float) -> str:
     if pd.isna(amount): return "Rp 0"
     return f"Rp {amount:,.0f}".replace(",", ".")
 
-# --- PERUBAIKAN 1: Fungsi Pelabelan Cerdas untuk DB KLIK ---
+# --- PERUBAIKAN 1 (Revisi): Fungsi Pelabelan Cerdas untuk DB KLIK menggunakan TF-IDF ---
 def smart_label_dbklik(df_dbklik: pd.DataFrame, df_database: pd.DataFrame) -> pd.DataFrame:
     """
-    Melabeli SKU dan KATEGORI untuk produk DB KLIK menggunakan fuzzy matching.
-    Jika tidak ada kecocokan pasti, fungsi ini akan mencari produk yang paling mirip 
-    di database dan menggunakan datanya, alih-alih melabeli "TIDAK DITEMUKAN".
+    Melabeli SKU dan KATEGORI untuk produk DB KLIK menggunakan TF-IDF dan Cosine Similarity.
+    Metode ini menganalisis kemiripan teks berdasarkan bobot kata untuk akurasi yang lebih tinggi
+    dan menggunakan data produk yang paling mirip dari database.
     """
-    st.write("Memulai pelabelan cerdas untuk produk DB KLIK...")
+    st.write("Memulai pelabelan cerdas (TF-IDF) untuk produk DB KLIK...")
     if 'NAMA' not in df_database.columns or df_database.empty:
         st.warning("Worksheet DATABASE kosong atau tidak memiliki kolom 'NAMA'. Pelabelan dilewati.")
         df_dbklik['SKU'] = "DB_INVALID"
         df_dbklik['KATEGORI'] = "DB_INVALID"
         return df_dbklik
 
-    # Buat daftar pilihan nama produk dari database untuk proses matching
-    db_choices = df_database['NAMA'].tolist()
-    # Buat mapping dari nama produk ke SKU dan Kategori untuk pencarian cepat
-    db_name_to_sku = pd.Series(df_database.SKU.values, index=df_database.NAMA).to_dict()
-    db_name_to_kategori = pd.Series(df_database.KATEGORI.values, index=df_database.NAMA).to_dict()
+    # 1. Normalisasi nama produk di kedua DataFrame
+    db_database_normalized = df_database['NAMA'].apply(normalize_text_for_similarity)
+    db_dbklik_normalized = df_dbklik['NAMA'].apply(normalize_text_for_similarity)
 
-    new_skus = []
-    new_kategoris = []
-
-    progress_bar = st.progress(0, text="Memberi label produk DB KLIK...")
-    total_rows = len(df_dbklik)
-
-    for i, row in df_dbklik.iterrows():
-        product_name = row['NAMA']
-        # Cari kecocokan terbaik menggunakan thefuzz
-        best_match = process.extractOne(product_name, db_choices, scorer=fuzz.token_set_ratio)
-        
-        if best_match and best_match[1] >= 65: # Batas kemiripan 65%
-            matched_name = best_match[0]
-            new_skus.append(db_name_to_sku.get(matched_name, "MATCH_NOT_FOUND"))
-            new_kategoris.append(db_name_to_kategori.get(matched_name, "MATCH_NOT_FOUND"))
-        else:
-            # Jika kemiripan terlalu rendah, tetap diisi sebisanya
-            fallback_name = best_match[0] if best_match else ""
-            new_skus.append(db_name_to_sku.get(fallback_name, "LOW_CONFIDENCE_MATCH"))
-            new_kategoris.append(db_name_to_kategori.get(fallback_name, "LOW_CONFIDENCE_MATCH"))
-        
-        # Update progress bar
-        progress_bar.progress((i + 1) / total_rows, text=f"Memberi label produk DB KLIK... ({i+1}/{total_rows})")
+    # 2. Buat model TF-IDF yang dioptimalkan
+    vectorizer = TfidfVectorizer(
+        max_features=5000,  # Batasi jumlah kata yang dianalisis ke 5000 kata paling penting
+        min_df=2,           # Abaikan kata yang hanya muncul di 1 nama produk (mengurangi noise)
+        ngram_range=(1, 2)  # Analisis kata tunggal dan frasa 2 kata (misal: "core i5")
+    )
     
-    progress_bar.empty()
-    df_dbklik['SKU'] = new_skus
-    df_dbklik['KATEGORI'] = new_kategoris
-    st.write("✔️ Pelabelan cerdas DB KLIK selesai.")
+    tfidf_matrix_database = vectorizer.fit_transform(db_database_normalized)
+    tfidf_matrix_dbklik = vectorizer.transform(db_dbklik_normalized)
+
+    # 3. Hitung cosine similarity
+    cosine_similarities = cosine_similarity(tfidf_matrix_dbklik, tfidf_matrix_database)
+
+    # 4. Cari kecocokan terbaik
+    best_match_indices = np.argmax(cosine_similarities, axis=1)
+    best_match_scores = np.max(cosine_similarities, axis=1)
+
+    matched_skus = df_database['SKU'].iloc[best_match_indices].values
+    matched_kategoris = df_database['KATEGORI'].iloc[best_match_indices].values
+
+    # 5. Terapkan logika berdasarkan skor kemiripan
+    similarity_threshold = 0.3 
+    final_skus = np.where(best_match_scores >= similarity_threshold, matched_skus, "LOW_CONFIDENCE_MATCH")
+    final_kategoris = np.where(best_match_scores >= similarity_threshold, matched_kategoris, "LOW_CONFIDENCE_MATCH")
+
+    df_dbklik['SKU'] = final_skus
+    df_dbklik['KATEGORI'] = final_kategoris
+    
+    st.write("✔️ Pelabelan cerdas DB KLIK (TF-IDF) selesai.")
     return df_dbklik
     
 # --- PERUBAIKAN 2 (Kinerja): Fungsi Normalisasi Teks untuk TF-IDF ---
@@ -320,11 +319,15 @@ def process_all_data(status_placeholder):
 
     # --- PERUBAIKAN 2 (Kinerja): Pre-computation untuk Similarity Search ---
     status_placeholder.info("Mempersiapkan model analisis kemiripan produk (TF-IDF)...")
-    # 1. Normalisasi nama produk
     df_gabungan['NAMA_NORMALIZED'] = df_gabungan['NAMA'].apply(normalize_text_for_similarity)
     
-    # 2. Buat dan simpan vectorizer & matrix
-    tfidf_vectorizer = TfidfVectorizer()
+    # Buat dan simpan vectorizer & matrix yang dioptimalkan
+    tfidf_vectorizer = TfidfVectorizer(
+        max_features=10000, # Batasi ke 10000 kata/frasa paling penting dari semua toko
+        min_df=2,           # Abaikan kata yang terlalu jarang muncul
+        max_df=0.9,         # Abaikan kata yang terlalu umum (muncul di >90% produk)
+        ngram_range=(1, 2)  # Analisis kata tunggal dan frasa 2 kata
+    )
     tfidf_matrix = tfidf_vectorizer.fit_transform(df_gabungan['NAMA_NORMALIZED'])
     status_placeholder.info("✔️ Model TF-IDF berhasil dibuat.")
     
@@ -351,7 +354,7 @@ def display_wow_metric(label, current_value, previous_value):
 
 # --- Judul Aplikasi ---
 st.title("📊 Dashboard Analisis Kompetitor & Penjualan")
-st.markdown("Versi 4.0 - Ditingkatkan dengan Pencarian Cepat & Pelabelan Cerdas")
+st.markdown("Versi 4.1 - Optimasi Kinerja TF-IDF")
 
 # --- Sidebar ---
 with st.sidebar:
@@ -564,3 +567,4 @@ if st.session_state.mode == "dashboard":
 if st.session_state.mode == "initial":
     st.info("👈 Silakan klik tombol **'Tarik & Proses Data Terbaru'** di sidebar untuk memulai analisis.")
     st.image("https://storage.googleapis.com/gweb-cloudblog-publish/images/Google_Drive_logo.max-2200x2200.png", width=150)
+
