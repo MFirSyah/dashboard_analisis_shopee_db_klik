@@ -221,6 +221,16 @@ def format_rupiah(val):
 # ================================
 st.title("📊 Dashboard Analisis Penjualan & Bisnis")
 
+# --- KODE DEBUGGING SEMENTARA ---
+st.header("DEBUGGING SECRETS")
+st.write("Mencoba membaca semua secrets yang ada:")
+if hasattr(st, 'secrets') and st.secrets:
+    # Menggunakan to_dict() untuk melihat semua isinya
+    st.write(st.secrets.to_dict())
+else:
+    st.warning("st.secrets kosong atau tidak ditemukan.")
+# -------------------------------
+
 # Mengambil kunci dari secrets, bukan ditulis langsung
 SPREADSHEET_KEY = st.secrets["ID_DATA"]
 gc = connect_to_gsheets()
@@ -719,6 +729,7 @@ elif app_mode == "HPP Produk":
         for col in ['Harga', 'Omzet']:
             display_tidak_ditemukan[col] = display_tidak_ditemukan[col].apply(format_rupiah)
         st.dataframe(display_tidak_ditemukan, use_container_width=True, hide_index=True)
+
 
 
 
