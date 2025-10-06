@@ -25,15 +25,8 @@ st.set_page_config(layout="wide", page_title="Dashboard Analisis v5.0")
 # ================================
 @st.cache_resource(show_spinner="Menghubungkan ke Google Sheets...")
 def connect_to_gsheets():
-    creds_dict = {
-        "type": st.secrets["gcp_type"], "project_id": st.secrets["gcp_project_id"],
-        "private_key_id": st.secrets["gcp_private_key_id"], "private_key": st.secrets["gcp_private_key_raw"].replace('\\n', '\n'),
-        "client_email": st.secrets["gcp_client_email"], "client_id": st.secrets["gcp_client_id"],
-        "auth_uri": st.secrets["gcp_auth_uri"], "token_uri": st.secrets["gcp_token_uri"],
-        "auth_provider_x509_cert_url": st.secrets["gcp_auth_provider_x509_cert_url"],
-        "client_x509_cert_url": st.secrets["gcp_client_x509_cert_url"]
-    }
-    gc = gspread.service_account_from_dict(creds_dict)
+    # Cukup panggil satu kunci utama dari secrets
+    gc = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
     return gc
 
 # ================================
@@ -725,3 +718,4 @@ elif app_mode == "HPP Produk":
         for col in ['Harga', 'Omzet']:
             display_tidak_ditemukan[col] = display_tidak_ditemukan[col].apply(format_rupiah)
         st.dataframe(display_tidak_ditemukan, use_container_width=True, hide_index=True)
+
