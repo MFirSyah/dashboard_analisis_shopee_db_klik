@@ -1,6 +1,9 @@
 streamlit
 pandas
-rapidfuzz
-plotly
 gspread
 gspread-dataframe
+plotly
+scikit-learn
+openpyxl
+xlsxwriter
+numpy
