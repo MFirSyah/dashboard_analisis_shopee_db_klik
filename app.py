@@ -1,6 +1,6 @@
 # ===================================================================================
 #  DASHBOARD ANALISIS PENJUALAN & KOMPETITOR V.FINAL
-#  Diadaptasi untuk struktur secrets.toml Firman
+#  Diadaptasi untuk struktur secrets.toml yang disederhanakan
 # ===================================================================================
 
 # --- 1. Impor Pustaka/Library ---
@@ -45,10 +45,11 @@ def normalize_text(text):
 def load_data_from_gsheets():
     """Menghubungkan ke Google Sheets dan memuat semua data yang diperlukan secara dinamis."""
     try:
-        creds_dict = st.secrets["gcp_service_account"]
         # --- PENYESUAIAN KUNCI ---
-        # Mengambil ID dari kunci "ID_DATA" sesuai file secrets.toml Anda
-        spreadsheet_id = st.secrets["ID_DATA"] 
+        # Mengambil seluruh blok service account
+        creds_dict = st.secrets["gcp_service_account"]
+        # Mengambil ID spreadsheet dari DALAM blok tersebut
+        spreadsheet_id = creds_dict["spreadsheet_id"] 
         
         sa = gspread.service_account_from_dict(creds_dict)
         spreadsheet = sa.open_by_key(spreadsheet_id)
@@ -73,6 +74,9 @@ def load_data_from_gsheets():
             
         return data_frames, spreadsheet
     
+    except KeyError as e:
+        st.error(f"Kunci tidak ditemukan di secrets.toml: {e}. Pastikan struktur file secrets Anda benar.")
+        return None, None
     except Exception as e:
         st.error(f"Gagal terhubung atau memuat data dari Google Sheets: {e}")
         return None, None
@@ -425,3 +429,4 @@ if st.session_state.get('data_loaded'):
                     st.info("Tidak ditemukan produk yang serupa secara signifikan di toko kompetitor pada data terbaru.")
 else:
     st.info("Memulai aplikasi... Harap tunggu.")
+
