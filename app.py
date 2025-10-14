@@ -154,77 +154,102 @@ def load_source_data_for_update(gc, spreadsheet_key):
     idx = rekap_df.groupby(['Toko', 'Nama Produk'])['Tanggal'].idxmax()
     return rekap_df.loc[idx].reset_index(drop=True)
 
-def run_price_comparison_update(gc, spreadsheet_key, score_cutoff=0.5): # Score cutoff disesuaikan untuk cosine similarity
+# ====================================================================
+# FUNGSI UNTUK PROSES UPDATE HARGA (VERSI BATCH PROCESSING)
+# ====================================================================
+def load_source_data_for_update(gc, spreadsheet_key):
+    # Fungsi ini tidak perlu diubah, biarkan seperti yang sudah ada
+    try:
+        spreadsheet = gc.open_by_key(spreadsheet_key)
+    except Exception as e:
+        st.error(f"Gagal koneksi saat update: {e}"); return pd.DataFrame()
+    rekap_df = _load_all_rekap_data(spreadsheet)
+    if rekap_df.empty: return pd.DataFrame()
+    rekap_df.columns = [str(c).strip().upper() for c in rekap_df.columns]
+    final_rename = { 'NAMA': 'Nama Produk', 'TANGGAL': 'Tanggal', 'HARGA': 'Harga', 'TOKO': 'Toko' }
+    rekap_df.rename(columns=final_rename, inplace=True)
+    required_cols = ['Tanggal', 'Nama Produk', 'Toko', 'Harga']
+    rekap_df = rekap_df[list(set(required_cols + list(rekap_df.columns)))]
+    if not all(col in rekap_df.columns for col in required_cols): return pd.DataFrame()
+    rekap_df['Tanggal'] = pd.to_datetime(rekap_df['Tanggal'], errors='coerce', dayfirst=True)
+    rekap_df['Harga'] = pd.to_numeric(rekap_df['Harga'].astype(str).str.replace(r'[^\d]', '', regex=True), errors='coerce')
+    rekap_df.dropna(subset=required_cols, inplace=True)
+    idx = rekap_df.groupby(['Toko', 'Nama Produk'])['Tanggal'].idxmax()
+    return rekap_df.loc[idx].reset_index(drop=True)
+
+
+def run_price_comparison_update(gc, spreadsheet_key, score_cutoff=0.6):
+    # --- PERUBAHAN: Menambahkan variabel BATCH_SIZE ---
+    BATCH_SIZE = 50 # Anda bisa menyesuaikan angka ini, misal 25 atau 100
+
     placeholder = st.empty()
     with placeholder.container():
-        st.info("Memulai pembaruan perbandingan harga dengan metode TF-IDF...")
+        st.info(f"Memulai pembaruan (Batch Size: {BATCH_SIZE})...")
         prog = st.progress(0, text="Mempersiapkan data...")
 
     source_df = load_source_data_for_update(gc, spreadsheet_key)
     if source_df is None or source_df.empty:
-        with placeholder.container(): st.error("Gagal memuat data sumber untuk update. Batal."); return
+        with placeholder.container(): st.error("Gagal memuat data sumber. Batal."); return
     
-    my_store_df = source_df[source_df['Toko'] == MY_STORE_NAME].copy()
-    competitor_df = source_df[source_df['Toko'] != MY_STORE_NAME].copy()
+    my_store_df = source_df[source_df['Toko'] == MY_STORE_NAME].reset_index(drop=True)
+    competitor_df = source_df[source_df['Toko'] != MY_STORE_NAME].reset_index(drop=True)
 
     if my_store_df.empty or competitor_df.empty:
         with placeholder.container(): st.warning("Data toko Anda atau kompetitor tidak cukup."); return
 
-    prog.progress(10, text="Membangun model TF-IDF...")
+    prog.progress(10, text="Membangun model TF-IDF untuk kompetitor...")
     
-    # Menyiapkan data nama produk untuk model
-    my_products = my_store_df['Nama Produk'].tolist()
-    competitor_products = competitor_df['Nama Produk'].tolist()
+    my_products_list = my_store_df['Nama Produk'].tolist()
+    competitor_products_list = competitor_df['Nama Produk'].tolist()
     
-    # Gabungkan semua nama produk untuk membangun vocabulary
-    all_products = my_products + competitor_products
-    
-    # Inisialisasi TF-IDF Vectorizer dengan N-gram karakter (3-gram hingga 5-gram)
     vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(3, 5))
-    tfidf_matrix = vectorizer.fit_transform(all_products)
     
-    # Pisahkan matriks untuk produk toko saya dan kompetitor
-    my_products_matrix = vectorizer.transform(my_products)
-    competitor_products_matrix = vectorizer.transform(competitor_products)
-
-    prog.progress(30, text="Menghitung similaritas...")
-    
-    # Hitung cosine similarity
-    cosine_sim = cosine_similarity(my_products_matrix, competitor_products_matrix)
+    # Fit model hanya pada data kompetitor sekali saja
+    competitor_products_matrix = vectorizer.fit_transform(competitor_products_list)
 
     all_matches = []
-    total = len(my_products)
-    
-    # Iterasi melalui hasil similaritas
-    for i in range(len(my_products)):
-        prog.progress(30 + int((i / total) * 60), text=f"Mencocokkan produk {i+1}/{total}")
-        
-        # Ambil skor similaritas untuk produk ke-i dari toko saya
-        sim_scores = list(enumerate(cosine_sim[i]))
-        
-        # Urutkan berdasarkan skor tertinggi
-        sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-        
-        # Ambil produk dari toko saya
-        my_product_row = my_store_df.iloc[i]
+    total_products = len(my_products_list)
 
-        # Iterasi melalui skor yang cocok di atas cutoff
-        for j, score in sim_scores:
-            if score >= score_cutoff:
-                competitor_product_row = competitor_df.iloc[j]
+    # --- PERUBAHAN: Melakukan loop per-batch ---
+    for i in range(0, total_products, BATCH_SIZE):
+        # Ambil batch produk dari toko Anda
+        batch_end = min(i + BATCH_SIZE, total_products)
+        my_products_batch = my_products_list[i:batch_end]
+        
+        if not my_products_batch: continue
+
+        # Update progress bar
+        progress_pct = 15 + int((i / total_products) * 80)
+        prog.progress(progress_pct, text=f"Memproses batch produk {i+1}-{batch_end} dari {total_products}")
+
+        # Transform hanya batch saat ini
+        my_products_batch_matrix = vectorizer.transform(my_products_batch)
+
+        # Hitung similaritas untuk batch ini saja
+        cosine_sim_batch = cosine_similarity(my_products_batch_matrix, competitor_products_matrix)
+
+        # Proses hasil dari batch ini
+        for batch_idx, my_prod_name in enumerate(my_products_batch):
+            global_idx = i + batch_idx # Indeks asli produk di my_store_df
+            my_product_row = my_store_df.iloc[global_idx]
+            
+            # Ambil skor similaritas dan cari yang di atas cutoff
+            sim_scores = cosine_sim_batch[batch_idx]
+            matching_indices = np.where(sim_scores >= score_cutoff)[0]
+
+            for comp_idx in matching_indices:
+                score = sim_scores[comp_idx]
+                competitor_product_row = competitor_df.iloc[comp_idx]
                 all_matches.append({
                     'Produk Toko Saya': my_product_row['Nama Produk'],
                     'Harga Toko Saya': int(my_product_row['Harga']),
                     'Produk Kompetitor': competitor_product_row['Nama Produk'],
                     'Harga Kompetitor': int(competitor_product_row['Harga']),
                     'Toko Kompetitor': competitor_product_row['Toko'],
-                    'Skor Kemiripan': round(score, 2), # Skor sekarang adalah cosine similarity
+                    'Skor Kemiripan': round(score, 2),
                     'Tanggal_Update': datetime.now().strftime('%Y-%m-%d')
                 })
-            else:
-                # Karena sudah diurutkan, kita bisa berhenti jika skor di bawah cutoff
-                break
-    
+
     prog.progress(95, text="Menyimpan hasil...")
     try:
         spreadsheet = gc.open_by_key(spreadsheet_key)
@@ -241,7 +266,6 @@ def run_price_comparison_update(gc, spreadsheet_key, score_cutoff=0.5): # Score 
             with placeholder.container(): st.warning("Tidak ditemukan pasangan produk yang cocok.")
     except Exception as e:
         with placeholder.container(): st.error(f"Gagal menyimpan hasil: {e}")
-
 
 # ================================
 # FUNGSI-FUNGSI PEMBANTU (UTILITY)
@@ -744,3 +768,4 @@ elif app_mode == "HPP Produk":
         for col in ['Harga', 'Omzet']:
             display_tidak_ditemukan[col] = display_tidak_ditemukan[col].apply(format_rupiah)
         st.dataframe(display_tidak_ditemukan, use_container_width=True, hide_index=True)
+
