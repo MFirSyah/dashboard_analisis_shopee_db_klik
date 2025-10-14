@@ -24,7 +24,7 @@ import numpy as np
 st.set_page_config(layout="wide", page_title="Dashboard Analisis v5.1")
 
 # --- PERUBAHAN: Mendefinisikan konstanta di bagian atas agar mudah diubah ---
-SPREADSHEET_KEY = "1hl7YPEPg4aaEheN5fBKk65YX3-KdkQBRHCJWhVr9kVQ"
+SPREADSHEET_KEY = "1g6tcqxGfvennkVuJUQuT5wbo8NRJKwwb90Z2tlmw__Q"
 MY_STORE_NAME = "DB KLIK"
 
 # ================================
@@ -711,3 +711,4 @@ elif app_mode == "HPP Produk":
         for col in ['Harga', 'Omzet']:
             display_tidak_ditemukan[col] = display_tidak_ditemukan[col].apply(format_rupiah)
         st.dataframe(display_tidak_ditemukan, use_container_width=True, hide_index=True)
+
