@@ -131,8 +131,12 @@ def load_all_data(spreadsheet_key):
         if not matches_df.empty:
             matches_df.columns = [str(c).strip() for c in matches_df.columns]
             expected_cols = ['Produk Toko Saya', 'Produk Kompetitor', 'Harga Kompetitor']
-            if any(col not in matches_df.columns for col in expected_cols):
-                st.error("Header di sheet 'HASIL_MATCHING' salah!")
+            missing_cols = [col for col in expected_cols if col not in matches_df.columns]
+            
+            if missing_cols:
+                # Menampilkan pesan error yang lebih detail
+                st.error(f"Header di sheet 'HASIL_MATCHING' salah! Kolom berikut tidak ditemukan: {', '.join(missing_cols)}")
+                st.warning(f"Kolom yang terdeteksi: {list(matches_df.columns)}") # Baris tambahan untuk debug
                 matches_df = pd.DataFrame()
     except gspread.exceptions.WorksheetNotFound: pass
     except Exception as e: st.warning(f"Gagal memuat 'HASIL_MATCHING': {e}")
@@ -711,4 +715,5 @@ elif app_mode == "HPP Produk":
         for col in ['Harga', 'Omzet']:
             display_tidak_ditemukan[col] = display_tidak_ditemukan[col].apply(format_rupiah)
         st.dataframe(display_tidak_ditemukan, use_container_width=True, hide_index=True)
+
 
