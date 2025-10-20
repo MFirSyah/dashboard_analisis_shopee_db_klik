@@ -22,8 +22,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 # ================================
 st.set_page_config(layout="wide", page_title="Dashboard Analisis v7.0")
 
-SPREADSHEET_KEY = "1g6tcqxGfvennkVuJUQuT5wbo8NRJKwwb90Z2tlmw__Q"
-MY_STORE_NAME = "DB KLIK"
+SPREADSHEET_KEY = st.secrets["spreadsheet_key"]
+MY_STORE_NAME = st.secrets["my_store_name"]
 
 # ================================
 # FUNGSI KONEKSI GOOGLE SHEETS
@@ -620,3 +620,4 @@ elif app_mode == "Cek Brand Toko":
                         kolom_tampilan = ['Nama Produk', 'HARGA (Rp)', 'Terjual per Bulan', 'Omzet (Rp)', 'Status']
                         st.dataframe(store_data_detail[kolom_tampilan], use_container_width=True, hide_index=True)
 # --- AKHIR BLOK BARU ---
+
