@@ -103,38 +103,25 @@ def _clean_unnamed_columns(df):
 
 
 def _enrich_from_database(rekap_df, database_df):
-    """Mengisi kolom SKU dan KATEGORI pada rekap_df dari sheet DATABASE berdasarkan Nama Produk."""
+    """Mengisi kolom SKU pada rekap_df dari sheet DATABASE berdasarkan Nama Produk (Kategori diambil dari sheet REKAP)."""
     if database_df is None or database_df.empty:
         return rekap_df
 
     db_cols_upper = {str(c).strip().upper(): c for c in database_df.columns}
     nama_col = db_cols_upper.get("NAMA") or db_cols_upper.get("NAMA PRODUK")
-    if not nama_col:
-        return rekap_df
-
-    lookup_cols = [nama_col]
     sku_col = db_cols_upper.get("SKU")
-    kat_col = db_cols_upper.get("KATEGORI")
-    if sku_col:
-        lookup_cols.append(sku_col)
-    if kat_col:
-        lookup_cols.append(kat_col)
-    if len(lookup_cols) == 1:
+    if not nama_col or not sku_col:
         return rekap_df
 
-    db_lookup = database_df[lookup_cols].copy()
+    db_lookup = database_df[[nama_col, sku_col]].copy()
     db_lookup["_nama_key"] = db_lookup[nama_col].astype(str).str.strip().str.upper()
     db_lookup = db_lookup[db_lookup["_nama_key"] != ""].drop_duplicates(subset=["_nama_key"], keep="last")
 
     rekap_keys = rekap_df["Nama Produk"].astype(str).str.strip().str.upper()
 
-    if sku_col and ("SKU" not in rekap_df.columns or rekap_df["SKU"].isnull().all()):
+    if "SKU" not in rekap_df.columns or rekap_df["SKU"].isnull().all():
         sku_map = db_lookup.set_index("_nama_key")[sku_col].replace("", np.nan).to_dict()
         rekap_df["SKU"] = rekap_keys.map(sku_map).fillna("N/A")
-
-    if kat_col and ("KATEGORI" not in rekap_df.columns or rekap_df["KATEGORI"].isnull().all()):
-        kat_map = db_lookup.set_index("_nama_key")[kat_col].replace("", np.nan).to_dict()
-        rekap_df["KATEGORI"] = rekap_keys.map(kat_map)
 
     return rekap_df
 
@@ -480,7 +467,7 @@ if app_mode == "Tab Analisis":
         section_counter += 1
         if "KATEGORI" in main_store_latest_overall.columns:
             main_store_cat = main_store_latest_overall.copy()
-            main_store_cat["KATEGORI"] = main_store_cat["KATEGORI"].replace("", "Lainnya").fillna("Lainnya")
+            main_store_cat["KATEGORI"] = main_store_cat["KATEGORI"].fillna("Lainnya").astype(str).str.strip().replace({"": "Lainnya", "nan": "Lainnya", "None": "Lainnya"})
             category_sales = main_store_cat.groupby("KATEGORI")["Omzet"].sum().reset_index()
             if not category_sales.empty:
                 cat_sales_sorted = category_sales.sort_values("Omzet", ascending=False).head(10)
