@@ -1,18 +1,10 @@
-streamlit
+streamlit>=1.50.0
 pandas
-plotly.express
-gspread
-gspread-dataframe
+plotly
+openpyxl
 numpy
 scikit-learn
 
-# Untuk Fuzzy
-fuzzywuzzy
-python-levenshtein
-
-# Untuk Word2Vec (FastText)
-gensim
-
-# Untuk SBERT
-sentence-transformers
-torch
+# Opsional: untuk koneksi Google Sheets (mode cloud/online)
+gspread
+gspread-dataframe

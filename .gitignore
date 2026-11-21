@@ -1,0 +1,12 @@
+# Streamlit secrets & credential files
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
