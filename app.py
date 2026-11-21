@@ -333,6 +333,77 @@ def apply_cell_style(styler, func, subset):
     return styler.applymap(func, subset=subset)
 
 
+_TFIDF_FILLER_RE = re.compile(
+    r"\b(garansi\s*resmi|original|ori|official|promo|termurah|murah|ready\s*stock|best\s*seller|free\s*ongkir|fast\s*secure|\d+yr\s*warranty)\b",
+    re.IGNORECASE,
+)
+_TFIDF_UNIT_SPACE_RE = re.compile(r"\b(\d+(?:[.,]\d+)?)\s*(gb|tb|mb|va|watt|w|mah|hz|mm|mbps|kbps|inch)\b", re.IGNORECASE)
+_TFIDF_SPEC_RE = re.compile(r"\b\d+(?:[.,]\d+)?(?:gb|tb|mb|va|w|mah|hz|mbps)\b", re.IGNORECASE)
+_TFIDF_GENERIC_ALNUM_RE = re.compile(
+    r"^(?:\d+(?:[.,]\d+)?(?:gb|tb|mb|va|w|mah|hz|mm|cm|inch|ms|fps|mbps|kbps|p|k|g|x\d+|bit)|usb\d+|ddr\d+|pd\d+|qc\d+|pcie\d+|gen\d+|bt\d+|wifi\d+|cat\d+|v\d+)$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_product_text(text):
+    """Menormalisasi nama produk untuk pencocokan TF-IDF (satuan, kode model, kata filler)."""
+    s = str(text or "").lower()
+    s = _TFIDF_FILLER_RE.sub(" ", s)
+    s = s.replace('"', " inch ").replace("''", " inch ")
+    s = _TFIDF_UNIT_SPACE_RE.sub(lambda m: f"{m.group(1)}{'w' if m.group(2).lower() == 'watt' else m.group(2).lower()}", s)
+    s = re.sub(r"(?<=[a-z0-9])-(?=[a-z0-9])", "", s)
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _extract_specs_and_models(norm_text):
+    """Mengekstrak token kapasitas/spesifikasi dan kode model alfanumerik dari nama produk."""
+    specs = set(_TFIDF_SPEC_RE.findall(norm_text))
+    models = {
+        tok
+        for tok in norm_text.split()
+        if len(tok) >= 4
+        and any(c.isalpha() for c in tok)
+        and any(c.isdigit() for c in tok)
+        and not _TFIDF_GENERIC_ALNUM_RE.match(tok)
+    }
+    return specs, models
+
+
+@st.cache_resource(show_spinner=False)
+def _build_competitor_tfidf_index(competitor_names_tuple):
+    """Membangun dan meng-cache indeks Hybrid TF-IDF (word + char_wb) untuk daftar produk kompetitor."""
+    comp_norm = [_normalize_product_text(name) for name in competitor_names_tuple]
+    word_vec = TfidfVectorizer(analyzer="word", ngram_range=(1, 2), min_df=1, sublinear_tf=True)
+    char_vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=2, sublinear_tf=True)
+    comp_word_mat = word_vec.fit_transform(comp_norm)
+    comp_char_mat = char_vec.fit_transform(comp_norm)
+    comp_meta = [_extract_specs_and_models(t) for t in comp_norm]
+    return word_vec, char_vec, comp_word_mat, comp_char_mat, comp_meta
+
+
+def _compute_hybrid_similarity(query_name, competitor_names_tuple):
+    """Menghitung skor kemiripan hybrid TF-IDF dengan penjagaan spesifikasi & kode model."""
+    word_vec, char_vec, comp_word_mat, comp_char_mat, comp_meta = _build_competitor_tfidf_index(competitor_names_tuple)
+    q_norm = _normalize_product_text(query_name)
+    q_specs, q_models = _extract_specs_and_models(q_norm)
+
+    w_sim = cosine_similarity(word_vec.transform([q_norm]), comp_word_mat)[0]
+    c_sim = cosine_similarity(char_vec.transform([q_norm]), comp_char_mat)[0]
+    base_scores = 0.55 * w_sim + 0.45 * c_sim
+
+    adj_scores = base_scores.copy()
+    for i in np.where(base_scores >= 0.15)[0]:
+        s = float(base_scores[i])
+        c_specs, c_models = comp_meta[i]
+        if q_specs and c_specs:
+            s = s + 0.05 if (q_specs & c_specs) else s * 0.50
+        if q_models and c_models:
+            s = s + 0.15 if (q_models & c_models) else s * 0.45
+        adj_scores[i] = min(1.0, max(0.0, s))
+    return adj_scores
+
+
 @st.cache_data
 def convert_df_for_download(df):
     return df.to_csv(index=False).encode("utf-8")
@@ -732,12 +803,8 @@ elif app_mode == "Cari Perbandingan":
         if selected_product and st.button(f"Cari Padanan untuk '{selected_product}'", type="primary"):
             my_product_info = main_store_latest_overall[main_store_latest_overall["Nama Produk"] == selected_product].iloc[0]
             with st.spinner("Menganalisis kemiripan dengan produk kompetitor..."):
-                my_product_list = [selected_product]
-                competitor_product_list = competitor_latest_overall["Nama Produk"].tolist()
-                vectorizer = TfidfVectorizer(analyzer="char", ngram_range=(3, 5))
-                competitor_matrix = vectorizer.fit_transform(competitor_product_list)
-                my_product_matrix = vectorizer.transform(my_product_list)
-                sim_scores = cosine_similarity(my_product_matrix, competitor_matrix)[0]
+                competitor_names_tuple = tuple(competitor_latest_overall["Nama Produk"].tolist())
+                sim_scores = _compute_hybrid_similarity(selected_product, competitor_names_tuple)
                 matching_indices = np.where(sim_scores >= accuracy_cutoff)[0]
                 my_price = int(my_product_info["Harga"])
                 my_sold = int(my_product_info["Terjual per Bulan"])
