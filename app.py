@@ -305,13 +305,13 @@ def load_all_data_from_gsheets(spreadsheet_key):
 
 
 def load_all_data():
-    """Memuat data dari Google Sheets jika terkonfigurasi, jika tidak dari DATA_REKAP.xlsx."""
+    """Memuat data dari DATA_REKAP.xlsx jika tersedia, atau dari Google Sheets jika terkonfigurasi."""
+    if os.path.exists(DEFAULT_EXCEL_PATH):
+        return load_all_data_from_excel(DEFAULT_EXCEL_PATH)
     if _has_gsheets_config():
         df, db_df = load_all_data_from_gsheets(SPREADSHEET_KEY)
         if df is not None and not df.empty:
             return df, db_df
-    if os.path.exists(DEFAULT_EXCEL_PATH):
-        return load_all_data_from_excel(DEFAULT_EXCEL_PATH)
     st.error("File 'DATA_REKAP.xlsx' tidak ditemukan dan konfigurasi Google Sheets belum tersedia.")
     return None, None
 
