@@ -339,9 +339,29 @@ def convert_df_for_download(df):
 
 
 def format_rupiah(val):
+    """Memformat angka ke format mata uang Rupiah penuh (contoh: Rp 1.425.000)."""
     if pd.isna(val) or not isinstance(val, (int, float, np.number)):
         return "N/A"
-    return f"Rp {int(val):,}"
+    val_int = int(round(val))
+    formatted = f"{abs(val_int):,}".replace(",", ".")
+    return f"-Rp {formatted}" if val_int < 0 else f"Rp {formatted}"
+
+
+def format_rupiah_singkat(val):
+    """Memformat angka ke penyingkatan Rupiah Indonesia (Rb, Jt, M, T) untuk label grafik."""
+    if pd.isna(val) or not isinstance(val, (int, float, np.number)):
+        return "N/A"
+    sign = "-" if val < 0 else ""
+    v = abs(float(val))
+    if v >= 1_000_000_000_000:
+        return f"{sign}Rp {v / 1_000_000_000_000:.2f}".replace(".", ",") + " T"
+    if v >= 1_000_000_000:
+        return f"{sign}Rp {v / 1_000_000_000:.2f}".replace(".", ",") + " M"
+    if v >= 1_000_000:
+        return f"{sign}Rp {v / 1_000_000:.1f}".replace(".", ",") + " Jt"
+    if v >= 1_000:
+        return f"{sign}Rp {v / 1_000:.0f} Rb"
+    return f"{sign}Rp {int(round(v))}"
 
 
 # ================================
@@ -470,12 +490,26 @@ if app_mode == "Tab Analisis":
             main_store_cat["KATEGORI"] = main_store_cat["KATEGORI"].fillna("Lainnya").astype(str).str.strip().replace({"": "Lainnya", "nan": "Lainnya", "None": "Lainnya"})
             category_sales = main_store_cat.groupby("KATEGORI")["Omzet"].sum().reset_index()
             if not category_sales.empty:
-                cat_sales_sorted = category_sales.sort_values("Omzet", ascending=False).head(10)
-                fig_cat = px.bar(cat_sales_sorted, x="KATEGORI", y="Omzet", title="Top 10 Kategori Berdasarkan Omzet", text_auto=".2s")
+                cat_sales_sorted = category_sales.sort_values("Omzet", ascending=False).head(10).copy()
+                cat_sales_sorted["Omzet_Singkat"] = cat_sales_sorted["Omzet"].apply(format_rupiah_singkat)
+                cat_sales_sorted["Omzet_Rp"] = cat_sales_sorted["Omzet"].apply(format_rupiah)
+                fig_cat = px.bar(
+                    cat_sales_sorted,
+                    x="KATEGORI",
+                    y="Omzet",
+                    title="Top 10 Kategori Berdasarkan Omzet",
+                    text="Omzet_Singkat",
+                    custom_data=["Omzet_Rp"],
+                )
+                fig_cat.update_traces(
+                    textposition="outside",
+                    hovertemplate="<b>%{x}</b><br>Omzet: %{customdata[0]}<extra></extra>",
+                )
+                fig_cat.update_layout(yaxis_tickprefix="Rp ", yaxis_separatethousands=True)
                 st.plotly_chart(fig_cat, width="stretch")
                 st.markdown("##### Rincian Data Omzet per Kategori")
-                table_cat_sales = cat_sales_sorted.copy()
-                table_cat_sales["Omzet"] = table_cat_sales["Omzet"].apply(lambda x: f"Rp {int(x):,.0f}")
+                table_cat_sales = cat_sales_sorted[["KATEGORI", "Omzet"]].copy()
+                table_cat_sales["Omzet"] = table_cat_sales["Omzet"].apply(format_rupiah)
                 st.dataframe(table_cat_sales, width="stretch", hide_index=True)
                 st.markdown("---")
                 st.subheader("Lihat Produk Terlaris per Kategori")
@@ -491,8 +525,8 @@ if app_mode == "Tab Analisis":
                             top_products_in_category["SKU"] = "N/A"
                         columns_to_display = ["Nama Produk", "SKU", "Harga", "Terjual per Bulan", "Omzet"]
                         display_table = top_products_in_category[columns_to_display].copy()
-                        display_table["Harga"] = display_table["Harga"].apply(lambda x: f"Rp {int(x):,.0f}")
-                        display_table["Omzet"] = display_table["Omzet"].apply(lambda x: f"Rp {int(x):,.0f}")
+                        display_table["Harga"] = display_table["Harga"].apply(format_rupiah)
+                        display_table["Omzet"] = display_table["Omzet"].apply(format_rupiah)
                         st.dataframe(display_table, width="stretch", hide_index=True)
             else:
                 st.info("Tidak ada data omzet per kategori untuk ditampilkan.")
@@ -502,8 +536,8 @@ if app_mode == "Tab Analisis":
         st.subheader(f"{section_counter}. Produk Terlaris")
         section_counter += 1
         top_products = main_store_latest_overall.sort_values("Terjual per Bulan", ascending=False).head(15).copy()
-        top_products["Harga_rp"] = top_products["Harga"].apply(lambda x: f"Rp {int(x):,.0f}")
-        top_products["Omzet_rp"] = top_products["Omzet"].apply(lambda x: f"Rp {int(x):,.0f}")
+        top_products["Harga_rp"] = top_products["Harga"].apply(format_rupiah)
+        top_products["Omzet_rp"] = top_products["Omzet"].apply(format_rupiah)
         if "SKU" not in top_products.columns:
             top_products["SKU"] = "N/A"
         display_cols_top = ["Nama Produk", "SKU", "Harga_rp", "Omzet_rp", "Terjual per Bulan"]
@@ -514,15 +548,19 @@ if app_mode == "Tab Analisis":
         section_counter += 1
         brand_omzet_main = main_store_latest_overall.groupby("Brand")["Omzet"].sum().reset_index()
         if not brand_omzet_main.empty:
+            top_brand_main = brand_omzet_main.sort_values("Omzet", ascending=False).head(7).copy()
+            top_brand_main["Omzet_Singkat"] = top_brand_main["Omzet"].apply(format_rupiah_singkat)
             fig_brand_pie = px.pie(
-                brand_omzet_main.sort_values("Omzet", ascending=False).head(7),
+                top_brand_main,
                 names="Brand",
                 values="Omzet",
                 title="Distribusi Omzet Top 7 Brand (Snapshot Terakhir)",
             )
             fig_brand_pie.update_traces(
+                text=top_brand_main["Omzet_Singkat"],
                 textposition="outside",
-                texttemplate="%{label}<br><b>Rp %{value:,.0f}</b><br>(%{percent})",
+                texttemplate="%{label}<br><b>%{text}</b><br>(%{percent})",
+                hovertemplate="<b>%{label}</b><br>Omzet: Rp %{value:,.0f} (%{percent})<extra></extra>",
                 insidetextfont=dict(color="white"),
             )
             fig_brand_pie.update_layout(showlegend=False)
@@ -537,7 +575,7 @@ if app_mode == "Tab Analisis":
             Omzet=("Omzet", "sum"), Penjualan_Unit=("Terjual per Bulan", "sum")
         ).reset_index().sort_values("Minggu")
         weekly_summary_tab1["Pertumbuhan Omzet (WoW)"] = weekly_summary_tab1["Omzet"].pct_change().apply(format_wow_growth)
-        weekly_summary_tab1["Omzet"] = weekly_summary_tab1["Omzet"].apply(lambda x: f"Rp {x:,.0f}")
+        weekly_summary_tab1["Omzet"] = weekly_summary_tab1["Omzet"].apply(format_rupiah)
         styled_weekly = apply_cell_style(
             weekly_summary_tab1[["Minggu", "Omzet", "Penjualan_Unit", "Pertumbuhan Omzet (WoW)"]].style,
             style_wow_growth,
@@ -560,15 +598,28 @@ if app_mode == "Tab Analisis":
                     ).reset_index().sort_values("Total_Omzet", ascending=False)
                     if not brand_analysis.empty:
                         display_brand_analysis = brand_analysis.head(10).copy()
-                        display_brand_analysis["Total_Omzet"] = display_brand_analysis["Total_Omzet"].apply(lambda x: f"Rp {int(x):,.0f}")
-                        st.dataframe(display_brand_analysis, width="stretch", hide_index=True)
+                        display_brand_analysis["Total_Omzet"] = display_brand_analysis["Total_Omzet"].apply(format_rupiah)
+                        top7_comp = brand_analysis.head(7).copy()
+                        top7_comp["Omzet_Singkat"] = top7_comp["Total_Omzet"].apply(format_rupiah_singkat)
                         fig_pie_comp = px.pie(
-                            brand_analysis.head(7),
+                            top7_comp,
                             names="Brand",
                             values="Total_Omzet",
                             title=f"Distribusi Omzet Top 7 Brand di {competitor_store} (Snapshot Terakhir)",
                         )
-                        st.plotly_chart(fig_pie_comp, width="stretch")
+                        fig_pie_comp.update_traces(
+                            text=top7_comp["Omzet_Singkat"],
+                            textposition="outside",
+                            texttemplate="%{label}<br><b>%{text}</b><br>(%{percent})",
+                            hovertemplate="<b>%{label}</b><br>Total Omzet: Rp %{value:,.0f} (%{percent})<extra></extra>",
+                        )
+                        fig_pie_comp.update_layout(showlegend=False)
+
+                        col_table, col_chart = st.columns([1, 1.2])
+                        with col_table:
+                            st.dataframe(display_brand_analysis, width="stretch", hide_index=True)
+                        with col_chart:
+                            st.plotly_chart(fig_pie_comp, width="stretch")
                     else:
                         st.info("Tidak ada data brand untuk toko ini.")
 
@@ -600,6 +651,7 @@ if app_mode == "Tab Analisis":
     with tab4:
         st.header("Analisis Kinerja Penjualan (Semua Toko)")
         all_stores_latest_per_week = latest_entries_weekly.groupby(["Minggu", "Toko"])["Omzet"].sum().reset_index()
+        all_stores_latest_per_week["Omzet_Rp"] = all_stores_latest_per_week["Omzet"].apply(format_rupiah)
         fig_weekly_omzet = px.line(
             all_stores_latest_per_week,
             x="Minggu",
@@ -607,14 +659,19 @@ if app_mode == "Tab Analisis":
             color="Toko",
             markers=True,
             title="Perbandingan Omzet Mingguan Antar Toko (Berdasarkan Snapshot Terakhir)",
+            custom_data=["Toko", "Omzet_Rp"],
         )
+        fig_weekly_omzet.update_traces(
+            hovertemplate="<b>%{customdata[0]}</b><br>Minggu: %{x}<br>Omzet: %{customdata[1]}<extra></extra>"
+        )
+        fig_weekly_omzet.update_layout(yaxis_tickprefix="Rp ", yaxis_separatethousands=True)
         st.plotly_chart(fig_weekly_omzet, width="stretch")
         st.subheader("Tabel Rincian Omzet per Tanggal")
         if not df_filtered.empty:
             omzet_pivot = df_filtered.pivot_table(index="Toko", columns="Tanggal", values="Omzet", aggfunc="sum").fillna(0)
             omzet_pivot.columns = [col.strftime("%d %b %Y") for col in omzet_pivot.columns]
             for col in omzet_pivot.columns:
-                omzet_pivot[col] = omzet_pivot[col].apply(lambda x: f"Rp {int(x):,}" if x > 0 else "-")
+                omzet_pivot[col] = omzet_pivot[col].apply(lambda x: format_rupiah(x) if x > 0 else "-")
             omzet_pivot.reset_index(inplace=True)
             st.info("Anda bisa scroll tabel ini ke samping untuk melihat tanggal lainnya.")
             st.dataframe(omzet_pivot, width="stretch", hide_index=True)
@@ -652,7 +709,7 @@ if app_mode == "Tab Analisis":
                                 & (df_filtered["Toko"] == store)
                                 & (df_filtered["Minggu"] == week_after)
                             ].copy()
-                            new_products_df["Harga_fmt"] = new_products_df["Harga"].apply(lambda x: f"Rp {int(x):,.0f}")
+                            new_products_df["Harga_fmt"] = new_products_df["Harga"].apply(format_rupiah)
                             cols_show = ["Nama Produk", "Harga_fmt"]
                             if "Stok" in new_products_df.columns:
                                 cols_show.append("Stok")
@@ -683,41 +740,49 @@ elif app_mode == "Cari Perbandingan":
                 sim_scores = cosine_similarity(my_product_matrix, competitor_matrix)[0]
                 matching_indices = np.where(sim_scores >= accuracy_cutoff)[0]
                 my_price = int(my_product_info["Harga"])
-                comparison_data = [{
-                    "Nama Produk Tercantum": my_product_info["Nama Produk"],
-                    "Toko": f"{MY_STORE_NAME} (Anda)",
-                    "Harga_num": my_price,
-                    "Selisih Harga": "Rp 0 (Basis)",
-                    "Skor Kemiripan": 1.0,
-                }]
+                my_sold = int(my_product_info["Terjual per Bulan"])
+                my_omzet = int(my_product_info["Omzet"])
+                my_status = "Ready" if my_product_info["Status"] == "Tersedia" else str(my_product_info["Status"])
+
+                comparison_data = []
                 for comp_idx in matching_indices:
                     score = sim_scores[comp_idx]
                     competitor_product_row = competitor_latest_overall.iloc[comp_idx]
                     comp_price = int(competitor_product_row["Harga"])
                     price_diff = comp_price - my_price
-                    diff_text = " (Sama)"
                     if price_diff > 0:
-                        diff_text = " (Lebih Mahal)"
+                        harga_label = f"{format_rupiah(comp_price)} (Lebih Mahal {format_rupiah(price_diff)})"
                     elif price_diff < 0:
-                        diff_text = " (Lebih Murah)"
+                        harga_label = f"{format_rupiah(comp_price)} (Lebih Murah {format_rupiah(abs(price_diff))})"
+                    else:
+                        harga_label = f"{format_rupiah(comp_price)} (Harga Sama)"
                     comparison_data.append({
-                        "Nama Produk Tercantum": competitor_product_row["Nama Produk"],
+                        "Nama Produk": competitor_product_row["Nama Produk"],
                         "Toko": competitor_product_row["Toko"],
                         "Harga_num": comp_price,
-                        "Selisih Harga": f"Rp {price_diff:,}{diff_text}",
+                        "Harga": harga_label,
+                        "Terjual/Bln": int(competitor_product_row["Terjual per Bulan"]),
+                        "Omzet Penjualan": format_rupiah(competitor_product_row["Omzet"]),
                         "Skor Kemiripan": float(score),
                     })
+
             st.divider()
-            st.subheader("Hasil Perbandingan Harga")
-            if len(comparison_data) > 1:
+            st.subheader(f"📦 Produk {MY_STORE_NAME}: {my_product_info['Nama Produk']}")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Status", my_status)
+            m2.metric("Harga Terbaru", format_rupiah(my_price))
+            m3.metric("Penjualan / Bln", f"{my_sold:,} unit".replace(",", "."))
+            m4.metric("Omzet Terkini", format_rupiah(my_omzet))
+
+            st.subheader("Hasil Perbandingan Produk Kompetitor")
+            if comparison_data:
                 comparison_df = pd.DataFrame(comparison_data).sort_values(by="Harga_num", ascending=True).reset_index(drop=True)
-                comparison_df["Harga"] = comparison_df["Harga_num"].apply(lambda x: f"Rp {x:,}")
-                ordered_cols = ["Nama Produk Tercantum", "Toko", "Harga", "Selisih Harga", "Skor Kemiripan"]
+                ordered_cols = ["Nama Produk", "Toko", "Harga", "Terjual/Bln", "Omzet Penjualan", "Skor Kemiripan"]
                 st.dataframe(
                     comparison_df[ordered_cols],
                     width="stretch",
                     hide_index=True,
-                    column_config={"Skor Kemiripan": st.column_config.ProgressColumn("Skor", format="%.2f", min_value=0.0, max_value=1.0)},
+                    column_config={"Skor Kemiripan": st.column_config.ProgressColumn("Skor Kemiripan", format="%.2f", min_value=0.0, max_value=1.0)},
                 )
             else:
                 st.warning(f"Tidak ditemukan produk yang cocok di toko kompetitor dengan tingkat akurasi di atas {accuracy_cutoff}.")
@@ -821,8 +886,61 @@ elif app_mode == "Cek Brand Toko":
             pivoted_summary_df = summary_df_sorted.T
 
             st.markdown("#### Ringkasan Performa Brand per Toko")
+
+            chart_df = summary_df_sorted.reset_index().copy()
+            chart_df["Omzet_Rp"] = chart_df["Total Omzet per Bulan"].apply(format_rupiah)
+            chart_df["Omzet_Singkat"] = chart_df["Total Omzet per Bulan"].apply(format_rupiah_singkat)
+            fig_brand_store = px.bar(
+                chart_df,
+                x="Total Omzet per Bulan",
+                y="Toko",
+                orientation="h",
+                text="Omzet_Singkat",
+                title=f"Perbandingan Omzet Brand '{selected_brand}' per Toko",
+                custom_data=[
+                    "Omzet_Rp",
+                    "Total Produk Terjual per Bulan",
+                    "Jumlah Produk Ready",
+                    "Jumlah Produk Habis",
+                ],
+            )
+            fig_brand_store.update_traces(
+                textposition="outside",
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Total Omzet/Bln: %{customdata[0]}<br>"
+                    "Terjual/Bln: %{customdata[1]:,.0f} unit<br>"
+                    "Produk Ready: %{customdata[2]:,.0f}<br>"
+                    "Produk Habis: %{customdata[3]:,.0f}<extra></extra>"
+                ),
+            )
+            fig_brand_store.update_layout(
+                yaxis={"categoryorder": "total ascending"},
+                xaxis_tickprefix="Rp ",
+                xaxis_separatethousands=True,
+                margin=dict(r=60),
+            )
+
+            col_bar, col_tooltip = st.columns([2, 1])
+            with col_bar:
+                st.plotly_chart(fig_brand_store, width="stretch")
+            with col_tooltip:
+                total_omzet_all = int(chart_df["Total Omzet per Bulan"].sum())
+                total_terjual_all = int(chart_df["Total Produk Terjual per Bulan"].sum())
+                total_ready_all = int(chart_df["Jumlah Produk Ready"].sum())
+                total_habis_all = int(chart_df["Jumlah Produk Habis"].sum())
+                top_store_row = chart_df.iloc[0]
+                st.info(
+                    f"**Ringkasan Tooltip ({selected_brand})**\n\n"
+                    f"- **Toko Tertinggi:** {top_store_row['Toko']} ({top_store_row['Omzet_Rp']})\n"
+                    f"- **Total Omzet Semua Toko:** {format_rupiah(total_omzet_all)}\n"
+                    f"- **Total Terjual/Bln:** {total_terjual_all:,} unit\n"
+                    f"- **Total Ready / Habis:** {total_ready_all:,} / {total_habis_all:,} produk\n\n"
+                    "*Arahkan kursor ke batang grafik di samping untuk melihat detail metrik tiap toko.*"
+                )
+
             styler = (
-                pivoted_summary_df.style.format("Rp {:,.0f}", subset=(pd.IndexSlice[["Total Omzet per Bulan"]], slice(None)))
+                pivoted_summary_df.style.format(format_rupiah, subset=(pd.IndexSlice[["Total Omzet per Bulan"]], slice(None)))
                 .format("{:,.0f}", subset=(pd.IndexSlice[["Total Produk Terjual per Bulan", "Jumlah Produk Ready", "Jumlah Produk Habis"]], slice(None)))
             )
             st.dataframe(styler, width="stretch")
@@ -834,8 +952,9 @@ elif app_mode == "Cek Brand Toko":
                     if store_data_detail.empty:
                         st.info(f"Brand **{selected_brand}** tidak ditemukan di toko ini pada tanggal tersebut.")
                     else:
-                        store_data_detail.sort_values(by="Omzet", ascending=False, inplace=True)
-                        store_data_detail["HARGA (Rp)"] = store_data_detail["Harga"].apply(lambda x: f"{x:,.0f}".replace(",", "."))
-                        store_data_detail["Omzet (Rp)"] = store_data_detail["Omzet"].apply(lambda x: f"{x:,.0f}".replace(",", "."))
+                        store_data_detail.sort_values(by=["Omzet", "Terjual per Bulan"], ascending=[False, False], inplace=True)
+                        store_data_detail["HARGA (Rp)"] = store_data_detail["Harga"].apply(format_rupiah)
+                        store_data_detail["Omzet (Rp)"] = store_data_detail["Omzet"].apply(format_rupiah)
+                        store_data_detail["Terjual per Bulan"] = store_data_detail["Terjual per Bulan"].astype(int)
                         kolom_tampilan = ["Nama Produk", "HARGA (Rp)", "Terjual per Bulan", "Omzet (Rp)", "Status"]
                         st.dataframe(store_data_detail[kolom_tampilan], width="stretch", hide_index=True)
